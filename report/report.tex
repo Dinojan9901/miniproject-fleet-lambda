@@ -647,7 +647,8 @@ Serve & \code{api\_speed\_view\_age\_seconds}, \code{api\_batch\_view\_age\_seco
 \end{center}
 
 \subsection{Alerting}
-Sixteen rules in \code{observability/alert\_rules.yml}, grouped by layer. Representative examples:
+Fifteen rules in \code{observability/alert\_rules.yml}, grouped by layer (ingestion, speed layer,
+batch layer, serving). Representative examples:
 
 \begin{itemize}
   \item \code{NoTelemetryIngested} --- no event published for 60\,s. The single most important rule:
@@ -763,7 +764,7 @@ The platform ingests a continuous telemetry stream and a once-per-simulated-day 
 processes both through a speed layer and a batch layer, stores an immutable master dataset alongside
 two clearly-labelled derived views, and answers the use case's two-part business question through a
 live dashboard, a REST API and a daily reconciliation report --- with structured logging, metrics,
-correlation identifiers and sixteen alert rules covering every stage.
+correlation identifiers and fifteen alert rules covering every stage.
 
 The architectural claim it rests on is narrow and, I think, defensible: Lambda was selected not
 because streaming is insufficient, but because this use case has \emph{two different correctness
@@ -786,7 +787,8 @@ replication factor 1. Monetary values are nominal LKR. \emph{Submission type:} i
 \noindent\small\textbf{Repository contents.} \code{README.md} (architecture summary, setup, the
 five-minute demo script, troubleshooting), \code{docker-compose.yml} (14 services),
 \code{common/} (shared modules), \code{simulators/}, \code{speed\_layer/}, \code{batch\_layer/},
-\code{serving/}, \code{airflow/dags/}, \code{sql/}, \code{observability/} (Prometheus, alert rules,
-Grafana), \code{scripts/} (smoke check, evidence export), \code{tests/} (76 tests).
+\code{serving/}, \code{airflow/dags/}, \code{sql/}, \code{observability/} (Prometheus, 15 alert rules,
+a 15-panel Grafana dashboard), \code{scripts/} (smoke check, evidence export),
+\code{tests/} (76 tests).
 
 \end{document}

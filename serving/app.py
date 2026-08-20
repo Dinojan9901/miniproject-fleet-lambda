@@ -57,21 +57,28 @@ app = FastAPI(
 async def observe(request: Request, call_next):
     """Every request is counted, timed and logged with a correlation-friendly shape."""
     started = time.time()
-    endpoint = request.scope.get("route").path if request.scope.get("route") else request.url.path
+    status = 500
     try:
         response = await call_next(request)
         status = response.status_code
         return response
     except Exception:
-        status = 500
         log.exception("request_failed", extra={"path": request.url.path})
         raise
     finally:
         duration = time.time() - started
+        # Read the matched route *after* the request has been handled: the router
+        # populates scope["route"] downstream of this middleware. Labelling with
+        # the route template ("/api/reports/daily/{sim_date}") rather than the
+        # concrete path keeps the metric's cardinality bounded -- labelling by
+        # raw path would mint a new Prometheus time series per simulated date.
+        route = request.scope.get("route")
+        endpoint = getattr(route, "path", None) or request.url.path
         REQUESTS.labels(request.method, endpoint, str(status)).inc()
         LATENCY.labels(endpoint).observe(duration)
         if duration > 1.0:
             log.warning("slow_request", extra={"path": request.url.path,
+                                               "endpoint": endpoint,
                                                "duration_seconds": round(duration, 3)})
 
 

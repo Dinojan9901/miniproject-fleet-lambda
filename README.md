@@ -386,7 +386,7 @@ pushes to a Pushgateway instead, because a 30-second job cannot be scraped.
 Grafana's *Fleet pipeline health* dashboard covers ingestion rate, quarantine
 ratio, micro-batch duration, ingest lag, batch rows and API latency.
 
-**Alerts** — 16 rules in `observability/alert_rules.yml`. Most of them fire on
+**Alerts** — 15 rules in `observability/alert_rules.yml`. Most of them fire on
 **the age of the output**, not on error counts, because that is how data
 pipelines actually fail: a crashed producer, a stalled stream and a batch job
 that never ran all look identical from the outside — no errors, just numbers that
