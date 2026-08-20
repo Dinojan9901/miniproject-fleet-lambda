@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fleet Operations &ndash; live</title>
+<style>
+  /* Design tokens. Light is the base; dark is a selected set of steps for the
+     dark surface, declared under both the OS media query and an explicit
+     data-theme stamp so a manual toggle wins either way. */
+  :root {
+    color-scheme: light;
+    --page:           #f9f9f7;
+    --surface:        #fcfcfb;
+    --ink:            #0b0b0b;
+    --ink-2:          #52514e;
+    --ink-muted:      #898781;
+    --grid:           #e1e0d9;
+    --axis:           #c3c2b7;
+    --border:         rgba(11, 11, 11, 0.10);
+    --series-1:       #2a78d6;
+    --series-1-soft:  rgba(42, 120, 214, 0.14);
+    --good:           #0ca30c;
+    --warning:        #fab219;
+    --critical:       #d03b3b;
+    --good-text:      #006300;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --page:          #0d0d0d;
+      --surface:       #1a1a19;
+      --ink:           #ffffff;
+      --ink-2:         #c3c2b7;
+      --ink-muted:     #898781;
+      --grid:          #2c2c2a;
+      --axis:          #383835;
+      --border:        rgba(255, 255, 255, 0.10);
+      --series-1:      #3987e5;
+      --series-1-soft: rgba(57, 135, 229, 0.18);
+      --good-text:     #0ca30c;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --page:          #0d0d0d;
+    --surface:       #1a1a19;
+    --ink:           #ffffff;
+    --ink-2:         #c3c2b7;
+    --ink-muted:     #898781;
+    --grid:          #2c2c2a;
+    --axis:          #383835;
+    --border:        rgba(255, 255, 255, 0.10);
+    --series-1:      #3987e5;
+    --series-1-soft: rgba(57, 135, 229, 0.18);
+    --good-text:     #0ca30c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem 1.25rem 3rem;
+    background: var(--page); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px; line-height: 1.45;
+  }
+  .wrap { max-width: 1240px; margin: 0 auto; }
+
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: .75rem 1rem; margin-bottom: .35rem; }
+  h1 { font-size: 1.25rem; margin: 0; letter-spacing: -0.01em; }
+  .subtitle { color: var(--ink-2); font-size: .84rem; margin-bottom: 1.1rem; }
+  .badges { display: flex; gap: .4rem; flex-wrap: wrap; margin-left: auto; }
+  .badge {
+    font-size: .72rem; padding: .18rem .5rem; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--ink-2); background: var(--surface);
+    display: inline-flex; align-items: center; gap: .3rem; white-space: nowrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ink-muted); }
+  .dot.ok { background: var(--good); }
+  .dot.warn { background: var(--warning); }
+  .dot.bad { background: var(--critical); }
+
+  h2 {
+    font-size: .76rem; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--ink-2); margin: 1.6rem 0 .6rem; font-weight: 600;
+  }
+  h2 .qualifier { text-transform: none; letter-spacing: 0; color: var(--ink-muted); font-weight: 400; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .6rem; }
+  .tile {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: .7rem .85rem;
+  }
+  .tile .label { font-size: .7rem; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-muted); }
+  .tile .value { font-size: 1.6rem; font-weight: 600; margin-top: .1rem; letter-spacing: -0.02em; }
+  .tile .note { font-size: .72rem; color: var(--ink-2); }
+  .value.pos { color: var(--good-text); }
+  .value.neg { color: var(--critical); }
+
+  .grid2 { display: grid; grid-template-columns: 1.35fr 1fr; gap: .8rem; align-items: start; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .panel {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: .85rem .95rem;
+  }
+  .panel .head { display: flex; align-items: baseline; justify-content: space-between; gap: .5rem; }
+  .panel .title { font-weight: 600; font-size: .88rem; }
+  .panel .hint { font-size: .72rem; color: var(--ink-muted); }
+
+  table { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  th, td { padding: .34rem .4rem; border-bottom: 1px solid var(--grid); text-align: left; }
+  th { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--ink-muted); font-weight: 600; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  tbody tr:last-child td { border-bottom: none; }
+
+  ul.alerts { list-style: none; margin: 0; padding: 0; }
+  ul.alerts li {
+    display: flex; gap: .5rem; align-items: flex-start;
+    padding: .42rem 0; border-bottom: 1px solid var(--grid); font-size: .82rem;
+  }
+  ul.alerts li:last-child { border-bottom: none; }
+  .sev { font-size: .68rem; font-weight: 600; padding: .1rem .35rem; border-radius: 4px;
+         white-space: nowrap; border: 1px solid var(--border); }
+  .sev.warning  { color: var(--warning);  }
+  .sev.critical { color: var(--critical); }
+  .alert-msg { color: var(--ink-2); }
+
+  .empty { color: var(--ink-muted); font-size: .8rem; padding: .8rem 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .78rem; }
+  a { color: var(--series-1); }
+
+  .chart-wrap { position: relative; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  .tooltip {
+    position: absolute; pointer-events: none; opacity: 0; transition: opacity .1s;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 7px;
+    padding: .35rem .5rem; font-size: .76rem; box-shadow: 0 4px 14px rgba(0,0,0,.13);
+    white-space: nowrap; z-index: 5;
+  }
+  .compare { display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: baseline; }
+  .compare div { font-size: .8rem; color: var(--ink-2); }
+  .compare strong { display: block; font-size: 1.15rem; color: var(--ink); font-weight: 600; }
+  footer { margin-top: 2rem; font-size: .74rem; color: var(--ink-muted); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Fleet operations</h1>
+    <div class="badges" id="badges"></div>
+  </header>
+  <div class="subtitle">
+    Lambda architecture &middot; the <strong>speed view</strong> is seconds old and approximate;
+    the <strong>batch view</strong> is one simulated day behind and authoritative.
+    Amounts in LKR. Refreshing every 5s.
+  </div>
+
+  <h2>Speed view <span class="qualifier">&mdash; live, approximate</span></h2>
+  <div class="tiles" id="tiles"></div>
+
+  <div class="grid2" style="margin-top:.8rem">
+    <div class="panel">
+      <div class="head">
+        <span class="title">Fleet earnings per window</span>
+        <span class="hint">simulated hourly windows &middot; hover for detail</span>
+      </div>
+      <div class="chart-wrap">
+        <svg id="line" viewBox="0 0 720 220" role="img" aria-label="Fleet earnings per simulated hourly window"></svg>
+        <div class="tooltip" id="line-tip"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="head">
+        <span class="title">Earnings by zone</span>
+        <span class="hint">latest window</span>
+      </div>
+      <div class="chart-wrap">
+        <svg id="bars" viewBox="0 0 420 220" role="img" aria-label="Earnings by operating zone in the latest window"></svg>
+        <div class="tooltip" id="bars-tip"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid2" style="margin-top:.8rem">
+    <div class="panel">
+      <div class="head"><span class="title">Zone metrics</span><span class="hint">latest window</span></div>
+      <table id="zones"><tbody><tr><td class="empty">waiting for the speed layer&hellip;</td></tr></tbody></table>
+    </div>
+    <div class="panel">
+      <div class="head"><span class="title">Alerts</span><span class="hint">raised by the speed layer</span></div>
+      <ul class="alerts" id="alerts"><li class="empty">no alerts yet</li></ul>
+    </div>
+  </div>
+
+  <h2>Batch view <span class="qualifier">&mdash; authoritative daily reconciliation</span></h2>
+  <div class="tiles" id="batch-tiles"></div>
+
+  <div class="grid2" style="margin-top:.8rem">
+    <div class="panel">
+      <div class="head">
+        <span class="title">Least profitable vehicles</span>
+        <span class="hint" id="report-link"></span>
+      </div>
+      <table id="worst"><tbody><tr><td class="empty">no batch run yet &ndash; the first lands after one simulated day</td></tr></tbody></table>
+    </div>
+    <div class="panel">
+      <div class="head"><span class="title">Speed vs batch</span><span class="hint">the Lambda gap</span></div>
+      <div class="compare" id="compare"><div class="empty">needs one completed batch run</div></div>
+      <p class="hint" style="margin:.6rem 0 0">
+        The speed layer sums windowed fare increments under a watermark; the batch layer sums the
+        final fare of every completed trip from the master dataset. A small gap is expected and is
+        exactly what the batch layer exists to correct.
+      </p>
+    </div>
+  </div>
+
+  <footer>
+    Data: <code>/api/fleet/live</code>, <code>/api/fleet/zones</code>, <code>/api/alerts</code>,
+    <code>/api/reports</code>, <code>/api/lambda/compare/&lt;date&gt;</code>.
+    Full API documentation at <a href="/docs">/docs</a>.
+  </footer>
+</div>
+
+<script>
+const fmt = (n, d = 0) => n === null || n === undefined || Number.isNaN(n)
+  ? "–" : Number(n).toLocaleString(undefined, {minimumFractionDigits: d, maximumFractionDigits: d});
+const el = id => document.getElementById(id);
+
+async function getJSON(url) {
+  const r = await fetch(url, {cache: "no-store"});
+  if (!r.ok) throw new Error(url + " -> " + r.status);
+  return r.json();
+}
+
+function tile(label, value, note, cls) {
+  return `<div class="tile"><div class="label">${label}</div>
+          <div class="value ${cls || ""}">${value}</div>
+          <div class="note">${note || "&nbsp;"}</div></div>`;
+}
+
+// --- charts --------------------------------------------------------------
+// Both charts are plain inline SVG: one series each, so identity never depends
+// on colour, and the last/largest value is direct-labelled instead of printing a
+// number on every mark.
+
+function lineChart(points) {
+  const svg = el("line"), tip = el("line-tip");
+  const W = 720, H = 220, L = 52, R = 46, T = 14, B = 30;
+  if (!points.length) { svg.innerHTML = `<text x="12" y="30" fill="var(--ink-muted)" font-size="12">waiting for windows…</text>`; return; }
+
+  const max = Math.max(...points.map(p => p.value), 1);
+  const x = i => L + (points.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (points.length - 1));
+  const y = v => T + (1 - v / max) * (H - T - B);
+
+  const ticks = [0, max / 2, max].map(v =>
+    `<line x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="var(--grid)" stroke-width="1"/>
+     <text x="${L - 8}" y="${(y(v) + 4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink-muted)">${fmt(v)}</text>`).join("");
+
+  const path = points.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p.value).toFixed(1)}`).join(" ");
+  const area = `${path} L${x(points.length - 1).toFixed(1)},${y(0).toFixed(1)} L${x(0).toFixed(1)},${y(0).toFixed(1)} Z`;
+  const last = points[points.length - 1];
+
+  const hit = points.map((p, i) => `<rect x="${(x(i) - 14).toFixed(1)}" y="${T}" width="28" height="${H - T - B}"
+      fill="transparent" data-i="${i}"/>`).join("");
+
+  svg.innerHTML = `
+    ${ticks}
+    <line x1="${L}" x2="${W - R}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="var(--axis)" stroke-width="1"/>
+    <path d="${area}" fill="var(--series-1-soft)" stroke="none"/>
+    <path d="${path}" fill="none" stroke="var(--series-1)" stroke-width="2"
+          stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${x(points.length - 1).toFixed(1)}" cy="${y(last.value).toFixed(1)}" r="4.5"
+            fill="var(--series-1)" stroke="var(--surface)" stroke-width="2"/>
+    <text x="${(x(points.length - 1) + 9).toFixed(1)}" y="${(y(last.value) + 4).toFixed(1)}"
+          font-size="11" font-weight="600" fill="var(--ink)">${fmt(last.value)}</text>
+    <text x="${L}" y="${H - 8}" font-size="10" fill="var(--ink-muted)">${points[0].label}</text>
+    <text x="${W - R}" y="${H - 8}" font-size="10" text-anchor="end" fill="var(--ink-muted)">${last.label}</text>
+    <line id="line-cross" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--axis)" stroke-width="1" opacity="0"/>
+    ${hit}`;
+
+  const cross = svg.querySelector("#line-cross");
+  svg.querySelectorAll("rect[data-i]").forEach(r => {
+    r.addEventListener("mouseenter", e => {
+      const p = points[+r.dataset.i];
+      cross.setAttribute("x1", x(+r.dataset.i)); cross.setAttribute("x2", x(+r.dataset.i));
+      cross.setAttribute("opacity", "1");
+      tip.innerHTML = `<strong>${fmt(p.value)}</strong> LKR<br>${p.label} – ${p.endLabel}<br>${p.trips} trips`;
+      tip.style.opacity = "1";
+      const box = svg.getBoundingClientRect();
+      tip.style.left = Math.min(box.width - 150, (x(+r.dataset.i) / W) * box.width + 10) + "px";
+      tip.style.top = ((y(p.value) / H) * box.height - 10) + "px";
+    });
+    r.addEventListener("mouseleave", () => { tip.style.opacity = "0"; cross.setAttribute("opacity", "0"); });
+  });
+}
+
+function barChart(rows) {
+  const svg = el("bars"), tip = el("bars-tip");
+  const W = 420, H = 220, L = 108, R = 54, T = 10;
+  if (!rows.length) { svg.innerHTML = `<text x="12" y="30" fill="var(--ink-muted)" font-size="12">waiting for windows…</text>`; return; }
+
+  const sorted = [...rows].sort((a, b) => b.earnings - a.earnings).slice(0, 6);
+  const max = Math.max(...sorted.map(r => r.earnings), 1);
+  const band = (H - T) / sorted.length;
+  const barH = Math.min(20, band - 6);   // 2px+ surface gap between adjacent bars
+
+  svg.innerHTML = sorted.map((r, i) => {
+    const w = Math.max(2, (r.earnings / max) * (W - L - R));
+    const yy = T + i * band + (band - barH) / 2;
+    return `<text x="${L - 8}" y="${(yy + barH / 2 + 4).toFixed(1)}" text-anchor="end"
+                  font-size="11" fill="var(--ink-2)">${r.zone}</text>
+            <rect x="${L}" y="${yy.toFixed(1)}" width="${w.toFixed(1)}" height="${barH}" rx="4"
+                  fill="var(--series-1)" data-i="${i}"/>
+            <text x="${(L + w + 7).toFixed(1)}" y="${(yy + barH / 2 + 4).toFixed(1)}"
+                  font-size="11" fill="var(--ink)" font-variant-numeric="tabular-nums">${fmt(r.earnings)}</text>`;
+  }).join("");
+
+  svg.querySelectorAll("rect[data-i]").forEach(rect => {
+    rect.addEventListener("mouseenter", () => {
+      const r = sorted[+rect.dataset.i];
+      tip.innerHTML = `<strong>${r.zone}</strong><br>${fmt(r.earnings)} LKR &middot; ${r.trips} trips<br>
+                       ${r.active_vehicles} active &middot; idle ${(r.idle_ratio * 100).toFixed(0)}%`;
+      tip.style.opacity = "1";
+      const box = svg.getBoundingClientRect(), rb = rect.getBoundingClientRect();
+      tip.style.left = Math.min(box.width - 170, rb.left - box.left + 12) + "px";
+      tip.style.top = (rb.top - box.top - 6) + "px";
+    });
+    rect.addEventListener("mouseleave", () => { tip.style.opacity = "0"; });
+  });
+}
+
+// --- refresh -------------------------------------------------------------
+
+function shortTime(iso) {
+  if (!iso) return "–";
+  return new Date(iso).toISOString().slice(11, 16) + "Z";
+}
+
+async function refreshSpeed() {
+  const [live, zones, alertData] = await Promise.all([
+    getJSON("/api/fleet/live"), getJSON("/api/fleet/zones?windows=12"), getJSON("/api/alerts?limit=8"),
+  ]);
+
+  const f = live.fleet || {};
+  el("tiles").innerHTML = [
+    tile("Vehicles", fmt(f.vehicles), "tracked right now"),
+    tile("On trip", fmt(f.on_trip), "passenger on board"),
+    tile("En route", fmt(f.enroute), "heading to pickup"),
+    tile("Idle", fmt(f.idle), "available"),
+    tile("Utilisation", f.utilisation_pct === null || f.utilisation_pct === undefined
+      ? "–" : fmt(f.utilisation_pct, 1) + "%", "active / fleet"),
+    tile("Window earnings", fmt(live.latest_window?.earnings), "latest simulated hour"),
+    tile("Open alerts", fmt(live.open_alerts), "unacknowledged",
+      live.open_alerts > 0 ? "neg" : ""),
+  ].join("");
+
+  // One point per window, oldest first.
+  const byWindow = new Map();
+  for (const r of zones.rows) {
+    const key = r.window_start;
+    const acc = byWindow.get(key) || {value: 0, trips: 0, end: r.window_end};
+    acc.value += r.earnings || 0;
+    acc.trips += r.trips || 0;
+    byWindow.set(key, acc);
+  }
+  const points = [...byWindow.entries()]
+    .sort((a, b) => new Date(a[0]) - new Date(b[0]))
+    .map(([start, v]) => ({
+      value: Math.round(v.value), trips: v.trips,
+      label: shortTime(start), endLabel: shortTime(v.end),
+    }));
+  lineChart(points);
+
+  const latest = live.latest_window?.zones || [];
+  barChart(latest.map(z => ({
+    zone: z.zone || "unknown", earnings: z.earnings || 0, trips: z.trips || 0,
+    active_vehicles: z.active_vehicles || 0, idle_ratio: z.idle_ratio || 0,
+  })));
+
+  el("zones").innerHTML = latest.length ? `
+    <thead><tr><th>Zone</th><th class="num">Active</th><th class="num">Trips</th>
+      <th class="num">Earnings</th><th class="num">Idle %</th><th class="num">Avg km/h</th></tr></thead>
+    <tbody>${latest.map(z => `<tr>
+      <td>${z.zone || "–"}</td>
+      <td class="num">${fmt(z.active_vehicles)}</td>
+      <td class="num">${fmt(z.trips)}</td>
+      <td class="num">${fmt(z.earnings)}</td>
+      <td class="num">${fmt((z.idle_ratio || 0) * 100, 0)}</td>
+      <td class="num">${fmt(z.avg_speed_kmh, 1)}</td></tr>`).join("")}</tbody>`
+    : `<tbody><tr><td class="empty">waiting for the first window to close…</td></tr></tbody>`;
+
+  // Severity is carried by an explicit label, never by colour alone.
+  el("alerts").innerHTML = alertData.alerts.length ? alertData.alerts.map(a => `
+    <li><span class="sev ${a.severity}">${a.severity === "critical" ? "●" : "▲"} ${a.severity}</span>
+        <span class="alert-msg">${a.message}</span></li>`).join("")
+    : `<li class="empty">no alerts yet</li>`;
+
+  return live;
+}
+
+async function refreshBatch() {
+  const reports = await getJSON("/api/reports");
+  const latest = reports.days[0];
+  if (!latest) {
+    el("batch-tiles").innerHTML = tile("Batch runs", "0",
+      "the first reconciliation lands after one simulated day");
+    return null;
+  }
+
+  el("batch-tiles").innerHTML = [
+    tile("Reconciled day", latest.sim_date, `run <code>${latest.run_id}</code>`),
+    tile("Revenue", fmt(latest.revenue), "authoritative"),
+    tile("Cost", fmt(latest.total_cost), "fuel + maintenance"),
+    tile("Profit", fmt(latest.profit), "revenue − cost", latest.profit >= 0 ? "pos" : "neg"),
+    tile("Margin", latest.margin_pct === null ? "–" : fmt(latest.margin_pct, 1) + "%", "of revenue"),
+    tile("Unprofitable", fmt(latest.unprofitable_vehicles), "vehicles flagged",
+      latest.unprofitable_vehicles > 0 ? "neg" : ""),
+    tile("Disputed", fmt(latest.disputed_vehicles), "distance mismatch"),
+  ].join("");
+
+  el("report-link").innerHTML =
+    `<a href="/api/reports/daily/${latest.sim_date}/html" target="_blank">full report ↗</a>`;
+
+  const day = await getJSON(`/api/reports/daily/${latest.sim_date}`);
+  el("worst").innerHTML = `
+    <thead><tr><th>Vehicle</th><th class="num">Trips</th><th class="num">Revenue</th>
+      <th class="num">Cost</th><th class="num">Profit</th><th class="num">Margin %</th><th>Flags</th></tr></thead>
+    <tbody>${day.vehicles.slice(0, 8).map(v => `<tr>
+      <td>${v.vehicle_id}</td>
+      <td class="num">${fmt(v.trips)}</td>
+      <td class="num">${fmt(v.revenue)}</td>
+      <td class="num">${fmt(v.total_cost)}</td>
+      <td class="num" style="color:${v.profit < 0 ? "var(--critical)" : "inherit"}">${fmt(v.profit)}</td>
+      <td class="num">${fmt(v.margin_pct, 1)}</td>
+      <td>${[v.unprofitable ? '<span class="sev critical">● loss</span>' : "",
+             v.distance_disputed ? '<span class="sev warning">▲ disputed</span>' : "",
+             !v.expense_data_present ? '<span class="sev">no expense row</span>' : ""].join(" ")}</td>
+    </tr>`).join("")}</tbody>`;
+
+  try {
+    const cmp = await getJSON(`/api/lambda/compare/${latest.sim_date}`);
+    el("compare").innerHTML = `
+      <div>speed view<strong>${fmt(cmp.speed_view.earnings)}</strong>${cmp.speed_view.windows} windows</div>
+      <div>batch view<strong>${fmt(cmp.batch_view.revenue)}</strong>authoritative</div>
+      <div>difference<strong>${fmt(cmp.difference.absolute)}</strong>
+        ${cmp.difference.pct_of_batch === null ? "" : fmt(cmp.difference.pct_of_batch, 2) + "% of batch"}</div>`;
+  } catch (e) { /* comparison needs both views; leave the placeholder */ }
+
+  return latest;
+}
+
+async function refreshBadges(live, latestBatch) {
+  const status = await getJSON("/api/pipeline/status");
+  const speedAge = status.speed_layer?.age_seconds;
+  const speedClass = speedAge === null || speedAge === undefined ? "" : (speedAge < 30 ? "ok" : speedAge < 120 ? "warn" : "bad");
+  const lastRun = status.batch_layer?.last_success;
+
+  el("badges").innerHTML = `
+    <span class="badge"><span class="dot ${speedClass}"></span>speed view
+      ${speedAge === null || speedAge === undefined ? "no data" : fmt(speedAge, 0) + "s old"}</span>
+    <span class="badge"><span class="dot ${lastRun ? "ok" : ""}"></span>batch view
+      ${lastRun ? lastRun.sim_date : "no run yet"}</span>
+    <span class="badge">sim event time ${shortTime(live?.fleet?.latest_event_time)}</span>`;
+}
+
+async function refresh() {
+  try {
+    const live = await refreshSpeed();
+    const latestBatch = await refreshBatch();
+    await refreshBadges(live, latestBatch);
+  } catch (err) {
+    el("badges").innerHTML = `<span class="badge"><span class="dot bad"></span>API error: ${err.message}</span>`;
+  }
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

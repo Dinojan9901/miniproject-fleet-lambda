@@ -1,0 +1,143 @@
+# Alerting rules, grouped by pipeline layer.
+#
+# The guiding principle: a data pipeline fails *silently*. A crashed producer, a
+# stalled stream and a batch job that never ran all look identical from outside
+# -- no errors, just numbers that quietly stop moving. So most of these rules
+# alert on the **age of the output**, not on error counts.
+
+groups:
+
+  # -------------------------------------------------------------------
+  - name: ingestion
+    rules:
+      - alert: TelemetryProducerDown
+        expr: up{job="telemetry-producer"} == 0
+        for: 1m
+        labels: {severity: critical, layer: ingestion}
+        annotations:
+          summary: "Telemetry producer is not being scraped"
+          description: "No /metrics response for 1m. The stream has no source; every downstream view is frozen at its last value."
+
+      - alert: NoTelemetryIngested
+        expr: time() - fleet_telemetry_last_event_unixtime > 60
+        for: 1m
+        labels: {severity: critical, layer: ingestion}
+        annotations:
+          summary: "No telemetry published for over a minute"
+          description: "The producer is up but has stopped emitting ({{ $value | humanizeDuration }} since the last event)."
+
+      - alert: ExpenseFileOverdue
+        # One simulated day is 300s; two days without a file means the daily
+        # batch source has stopped and the batch layer will starve.
+        expr: time() - fleet_expense_last_file_unixtime > 660
+        for: 2m
+        labels: {severity: warning, layer: ingestion}
+        annotations:
+          summary: "Daily expense file is overdue"
+          description: "No expense file for {{ $value | humanizeDuration }} (expected one every 300s of wall time)."
+
+  # -------------------------------------------------------------------
+  - name: speed_layer
+    rules:
+      - alert: SpeedLayerStalled
+        expr: time() - max by (query) (speed_last_batch_unixtime) > 90
+        for: 1m
+        labels: {severity: critical, layer: speed}
+        annotations:
+          summary: "Speed layer query {{ $labels.query }} has stopped producing micro-batches"
+          description: "Last completed micro-batch was {{ $value | humanizeDuration }} ago; the live dashboard is going stale."
+
+      - alert: SpeedLayerBatchFailures
+        expr: increase(speed_batch_failures_total[5m]) > 0
+        labels: {severity: warning, layer: speed}
+        annotations:
+          summary: "Speed layer micro-batch failures on {{ $labels.query }}"
+          description: "{{ $value }} failed micro-batches in 5m. Offsets are not advancing past the failure."
+
+      - alert: HighQuarantineRate
+        # Some malformed telemetry is normal and expected; a sustained quarter of
+        # the stream failing validation is an upstream schema or device problem.
+        expr: >
+          sum(rate(speed_events_total{outcome="quarantined"}[5m]))
+          / clamp_min(sum(rate(speed_events_total[5m])), 0.001) > 0.25
+        for: 3m
+        labels: {severity: warning, layer: speed}
+        annotations:
+          summary: "Over 25% of telemetry is failing validation"
+          description: "Quarantine ratio is {{ $value | humanizePercentage }} over 5m."
+
+      - alert: IngestLagGrowing
+        expr: speed_ingest_lag_seconds > 120
+        for: 3m
+        labels: {severity: warning, layer: speed}
+        annotations:
+          summary: "Speed layer is falling behind the stream"
+          description: "Events are reaching processing {{ $value | humanizeDuration }} after ingestion."
+
+  # -------------------------------------------------------------------
+  - name: batch_layer
+    rules:
+      - alert: BatchJobFailed
+        expr: increase(fleet_batch_runs{status="failed"}[10m]) > 0
+        labels: {severity: critical, layer: batch}
+        annotations:
+          summary: "Daily reconciliation failed for {{ $labels.sim_date }}"
+          description: "The batch layer reported a failure; the day is unmarked and will be retried by Airflow."
+
+      - alert: BatchOutputStale
+        # Airflow runs every 5 minutes; 15 minutes without a success means three
+        # consecutive simulated days went unreconciled.
+        expr: time() - max(fleet_batch_last_success_unixtime) > 900
+        for: 2m
+        labels: {severity: warning, layer: batch}
+        annotations:
+          summary: "No successful batch reconciliation for 15 minutes"
+          description: "The authoritative view is {{ $value | humanizeDuration }} old."
+
+      - alert: BatchDroppingData
+        expr: fleet_batch_clean_rows / clamp_min(fleet_batch_telemetry_rows, 1) < 0.5
+        labels: {severity: warning, layer: batch}
+        annotations:
+          summary: "Batch layer discarded over half the day's telemetry for {{ $labels.sim_date }}"
+          description: "Only {{ $value | humanizePercentage }} of rows passed validation -- the report is built on a thin sample."
+
+      - alert: FleetUnprofitable
+        # A business alert rather than an infrastructure one: the pipeline is
+        # healthy, the fleet is not.
+        expr: fleet_batch_profit < 0
+        labels: {severity: warning, layer: business}
+        annotations:
+          summary: "Fleet ran at a loss on {{ $labels.sim_date }}"
+          description: "Reconciled profit was {{ $value }} LKR."
+
+  # -------------------------------------------------------------------
+  - name: serving
+    rules:
+      - alert: ApiDown
+        expr: up{job="serving-api"} == 0
+        for: 1m
+        labels: {severity: critical, layer: serving}
+        annotations:
+          summary: "Serving API is unreachable"
+
+      - alert: SpeedViewStale
+        expr: api_speed_view_age_seconds > 120
+        for: 2m
+        labels: {severity: warning, layer: serving}
+        annotations:
+          summary: "Dashboard is serving a stale speed view"
+          description: "Newest speed-layer write is {{ $value | humanizeDuration }} old."
+
+      - alert: ApiSlow
+        expr: >
+          histogram_quantile(0.95, sum by (le, endpoint) (rate(api_request_duration_seconds_bucket[5m]))) > 1
+        for: 3m
+        labels: {severity: warning, layer: serving}
+        annotations:
+          summary: "p95 latency above 1s on {{ $labels.endpoint }}"
+
+      - alert: ApiDatabaseErrors
+        expr: increase(api_db_errors_total[5m]) > 3
+        labels: {severity: warning, layer: serving}
+        annotations:
+          summary: "Serving API is hitting database errors"

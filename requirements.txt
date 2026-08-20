@@ -1,0 +1,12 @@
+# Runtime dependencies for the simulators, Spark jobs and serving API.
+# Pinned so the image and a host-side `pytest` run agree.
+
+confluent-kafka==2.6.1        # Kafka producer/consumer (librdkafka)
+pyspark==3.5.1                # speed layer + batch layer
+psycopg2-binary==2.9.9        # serving store
+prometheus-client==0.21.0     # metrics exposition and Pushgateway
+fastapi==0.115.0              # serving API
+uvicorn[standard]==0.30.6     # ASGI server
+
+# Tests only -- no broker, no Spark, no database required.
+pytest==8.3.3

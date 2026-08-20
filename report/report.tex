@@ -1,0 +1,792 @@
+% EC8203 Applied Big Data Engineering -- Mini Project Report
+% Compile: latexmk -pdf report.tex   (or: pdflatex report.tex, twice)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{graphicx}
+\usepackage{fancyhdr}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc}
+\usepackage[hidelinks]{hyperref}
+
+\definecolor{accent}{HTML}{1C5CAB}
+\definecolor{rule}{HTML}{C3C2B7}
+\definecolor{soft}{HTML}{F3F6FA}
+\definecolor{speed}{HTML}{2A78D6}
+\definecolor{batch}{HTML}{EB6834}
+\definecolor{store}{HTML}{1BAF7A}
+\definecolor{ink}{HTML}{16202C}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+\newcommand{\term}[1]{\textbf{#1}}
+
+\captionsetup{font=small,labelfont={bf,color=accent}}
+\setlist{itemsep=2pt,topsep=3pt,parsep=0pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\color{ink}EC8203 Applied Big Data Engineering}
+\fancyhead[R]{\small\color{ink}Mini Project --- Fleet Operations Platform}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\title{\vspace{-1.5cm}\textbf{A Lambda Architecture for Real-Time\\Ride-Hailing Fleet Operations}}
+\author{EC8203 Applied Big Data Engineering --- Mini Project (25\%)\\[2pt]
+\normalsize Use Case 1: Ride-Hailing Fleet Operations}
+\date{\today}
+
+% Graceful degradation: the report compiles whether or not screenshots are present.
+\newcommand{\screenshot}[3]{%
+  \begin{figure}[htbp]\centering
+  \IfFileExists{figures/#1}{\includegraphics[width=#3\textwidth]{figures/#1}}{%
+    \fbox{\parbox[c][3.2cm][c]{#3\textwidth}{\centering\small\itshape
+    Screenshot placeholder --- save as \code{report/figures/#1}\\[2pt]
+    (#2)}}}
+  \caption{#2}\label{fig:#1}
+  \end{figure}}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\vspace{-0.6cm}
+\begin{center}
+\begin{minipage}{0.93\textwidth}\small
+\color{ink}\textbf{Summary.} This report documents a complete, running data platform that
+ingests continuous vehicle telemetry from Kafka and a once-per-day vehicle expense file, processes
+both, and answers a two-part business question: \emph{what is fleet utilisation and earnings by zone
+right now}, and \emph{which vehicles became unprofitable once yesterday's fuel and maintenance costs
+are applied}. The two halves have different latency and correctness contracts, which is the reason a
+\textbf{Lambda} architecture was selected over Kappa. The system runs as fourteen containers under
+Docker Compose; simulated time is compressed so that one simulated day elapses every five real
+minutes.
+\end{minipage}
+\end{center}
+
+\vspace{0.3cm}
+\tableofcontents
+\vspace{0.4cm}
+
+%=====================================================================
+\section{Use Case and Business Requirements}
+
+\subsection{The scenario}
+A ride-hailing operator runs a fleet of vehicles across a city. Two groups inside the company need
+answers from the same underlying activity, but they are not the same question:
+
+\begin{itemize}
+  \item \term{Dispatch} needs to know, \emph{now}, how many vehicles are working, how many are idle,
+        where earnings are being generated, and which vehicles have been sitting still too long.
+        A number that is ten seconds old and approximately right is useful. A number that is
+        perfectly right and twenty minutes old is not.
+  \item \term{Fleet finance} needs to know which vehicles stopped paying for themselves. That
+        calculation cannot be made until the fuel partner and the garage submit the day's costs,
+        which happens once per day, after the fact. This number decides whether a vehicle is
+        withdrawn from service or a driver's contract is reviewed, so ``approximately right'' is
+        not acceptable.
+\end{itemize}
+
+\subsection{Requirements interpreted from the brief}
+Table~\ref{tab:requirements} restates the use case as engineering requirements. The split down the
+middle is the finding that drives every subsequent decision.
+
+\begin{table}[htbp]\centering\small
+\caption{The business question decomposed. The two columns have incompatible contracts.}
+\label{tab:requirements}
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+& \textbf{Live operational view} & \textbf{Daily reconciliation} \\
+\midrule
+Question & Utilisation and earnings by zone, now & Which vehicles are unprofitable \\
+Latency budget & Seconds & Once per day, minutes to produce \\
+Accuracy needed & Directional; approximation acceptable & Exact; it is money \\
+Data completeness & Partial window is fine & Whole day, including late events \\
+Sources required & Telemetry stream only & Telemetry \emph{and} the expense file \\
+Correction path & Superseded by the next window & Must be restatable on dispute \\
+Consistency model & Eventual & Strong, per day \\
+Cost of a wrong answer & Dispatcher re-checks & A vehicle wrongly withdrawn \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Deliverables of the running system}
+Following the use case's suggested outputs, the platform produces: (i) an API returning real-time
+fleet utilisation metrics --- active vehicles, idle ratio, trips, earnings by zone; (ii)
+threshold-based alerts when a vehicle has been idle beyond a configurable limit; and (iii) a daily
+per-vehicle profitability reconciliation report, rendered as a standalone HTML page and a CSV, and
+also queryable through the API. A live dashboard presents both views together.
+
+%=====================================================================
+\section{Architecture Decision: Lambda versus Kappa}
+
+\subsection{The two candidates}
+\term{Kappa} treats the log as the system of record and runs a single stream-processing path.
+History is not a separate store; it is the log replayed from an earlier offset, usually by a second
+instance of the job writing to a new output table. There is one codebase, one execution model, one
+set of semantics to reason about.
+
+\term{Lambda} keeps an append-only \emph{master dataset} and derives two views from it: a
+\emph{speed layer} that computes fast, approximate answers from the live stream, and a \emph{batch
+layer} that periodically recomputes exact answers from the complete data. A serving layer presents
+both.
+
+\subsection{Decision}
+\begin{center}
+\fcolorbox{rule}{soft}{\parbox{0.93\textwidth}{\vspace{2pt}
+\textbf{This project implements a Lambda architecture.} The determining factor is not latency ---
+both architectures meet the latency budget comfortably --- but that the authoritative answer
+requires a \emph{whole day} of data joined to an \emph{externally supplied, revisable} file, while
+the operational answer requires an incomplete window \emph{now}. These are two different
+correctness contracts over the same events, and Lambda is the architecture that makes that
+difference explicit instead of hiding it.
+\vspace{2pt}}}
+\end{center}
+
+\subsection{Justification against the four decision axes}
+
+\paragraph{Latency.} Dispatch needs seconds; the reconciliation needs a daily cadence. The speed
+layer triggers every 10--15 seconds, comfortably inside the operational budget, and Kappa would meet
+it equally well. \emph{Latency does not discriminate between the two architectures here}, and any
+argument that claims it does is reaching for the wrong reason.
+
+\paragraph{Replay and recomputation.} This axis does discriminate. Kappa's recomputation story is
+``replay the log'', which binds the recomputation horizon to Kafka's retention. Two properties of
+this use case make that uncomfortable. First, a billing dispute over fuel costs can be raised long
+after the fact, so the horizon over which the operator must be able to recompute is months, not
+days --- retaining months of raw high-frequency GPS telemetry in Kafka is possible but is the most
+expensive way to store cold data. Second, recomputation here is not only about fixing a bug in the
+job; it is about \emph{restating a day} because the partner reissued a corrected invoice. Lambda's
+answer is direct: the day's Parquet partition is still there, the corrected file replaces the old
+one, and the DAG re-runs that date. In this implementation every write is an upsert keyed on
+\code{(sim\_date, vehicle\_id)}, so a restatement replaces the day rather than duplicating it.
+
+\paragraph{Cost.} At the scale of this demonstration, cost is not a differentiator. At realistic
+scale it is, and it favours Lambda for this workload: telemetry is high-volume and mostly cold after
+the day closes, so it belongs in partitioned columnar files on object storage --- where a daily job
+reads one date's partition with predicate pushdown --- rather than in broker storage sized for
+replay. The countervailing cost of Lambda is engineering time for two code paths, addressed below.
+
+\paragraph{Consistency.} The decisive axis, together with replay. The daily file is not a stream and
+does not behave like one: it arrives once, it is complete only when the file is closed, rows may be
+missing, and it may be \emph{corrected and reissued}. That is an update-in-place artifact, whereas a
+log is append-only. To handle it in Kappa one either shreds the file into synthetic events --- and
+then must invent semantics for a correction that supersedes earlier events --- or performs a
+stream--static join against a table that is itself mutable, which quietly reintroduces batch
+semantics without admitting it. Lambda has a natural place for this: the batch layer joins two
+complete datasets at rest and produces a result that is correct for that day and re-derivable.
+
+\subsection{Rejected alternatives}
+
+\begin{table}[htbp]\centering\small
+\caption{Alternatives considered and why each was rejected.}
+\label{tab:rejected}
+\begin{tabularx}{\textwidth}{@{}lXX@{}}
+\toprule
+\textbf{Alternative} & \textbf{What it would look like} & \textbf{Why rejected} \\
+\midrule
+Kappa &
+One Structured Streaming job; the daily file shredded into events onto a second topic; reconciliation
+as a stream--static join; history as log replay. &
+Requires inventing supersede semantics for corrected invoices, binds the recomputation horizon to
+broker retention, and makes the money figure a product of watermarked, approximate aggregation.
+The machinery exists only to make a batch source look like a stream. \\
+\addlinespace
+Pure batch (no speed layer) &
+Land telemetry in the lake; run everything on a schedule. &
+Answers only half the business question. Dispatch cannot act on figures computed after the fact;
+the idle-vehicle alert is worthless if it fires the next morning. \\
+\addlinespace
+Pure streaming, no batch layer &
+Speed layer alone; stream--static join against the expense table; windowed aggregates serve as the
+daily report. &
+Events later than the watermark are dropped permanently, and \code{approx\_count\_distinct} becomes
+the trip count a driver is paid on. Neither is defensible for a financial figure, and neither can
+be restated. \\
+\addlinespace
+Managed cloud services &
+Kinesis/Pub-Sub, Dataflow or Databricks, BigQuery/Redshift. &
+Sound production choice and the natural migration path, but it cannot be submitted as a
+self-contained, reproducible artefact that a marker runs locally with one command. Noted in
+\S\ref{sec:production} as the production direction. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Trade-offs accepted, honestly}
+Lambda's standard criticism --- famously Kreps' original argument for Kappa --- is that the same
+business logic is implemented twice, in two engines, and the two implementations drift. That
+criticism is legitimate and is only \emph{partly} mitigated here:
+
+\begin{itemize}
+  \item \term{Mitigated:} validation rules (\code{common/validation.py}), zone assignment
+        (\code{common/geo.py}), the vehicle roster, and the economic thresholds
+        (\code{batch\_layer/profitability.py}) are single modules imported by both layers. A rule
+        change happens once. Both layers also run on the same engine, Spark, so there is no second
+        dialect to maintain.
+  \item \term{Not mitigated:} the aggregation logic itself genuinely differs --- the speed layer
+        windows over event time with a watermark and HyperLogLog distinct counts, while the batch
+        layer groups an entire day exactly. That is not accidental duplication that better
+        factoring would remove; it is the intended difference between the two answers.
+  \item \term{Residual risk:} the dashboard can show a live figure that a later report contradicts.
+        Rather than hide this, every API response is labelled
+        (\code{"view": "speed", "accuracy": "approximate"} versus
+        \code{"view": "batch", "accuracy": "authoritative"}), and
+        \code{/api/lambda/compare/<date>} reports the difference between the two as a number.
+        Section~\ref{sec:results} gives the measured gap.
+  \item \term{Storage duplication:} the same events exist in Kafka (briefly), in Parquet
+        (durably) and in aggregated form in Postgres. This is inherent to Lambda and is accepted.
+\end{itemize}
+
+%=====================================================================
+\section{System Architecture}
+
+\begin{figure}[htbp]\centering
+\begin{tikzpicture}[
+  font=\scriptsize,
+  box/.style={draw=rule,fill=white,rounded corners=2pt,minimum height=8mm,align=center,inner sep=3pt},
+  src/.style={box,fill=soft,minimum width=26mm},
+  spd/.style={box,draw=speed,line width=0.7pt,minimum width=30mm},
+  bth/.style={box,draw=batch,line width=0.7pt,minimum width=30mm},
+  sto/.style={box,draw=store,line width=0.7pt,minimum width=27mm},
+  srv/.style={box,draw=accent,line width=0.7pt,minimum width=27mm},
+  ar/.style={-{Stealth[length=4pt]},draw=ink!70},
+  lbl/.style={font=\tiny\itshape,text=ink!70}
+]
+
+\node[src] (tel) {telemetry simulator\\{\tiny 12 vehicles, $\sim$6 ev/s, 4\% malformed}};
+\node[src, below=13mm of tel] (exp) {expense simulator\\{\tiny 1 CSV per simulated day}};
+
+\node[box, right=11mm of tel, fill=soft, minimum width=22mm] (kafka)
+  {Kafka\\{\tiny \code{fleet.telemetry}}\\{\tiny 3 partitions, keyed}};
+\node[box, right=11mm of exp, fill=soft, minimum width=22mm] (landing)
+  {landing dir\\{\tiny atomic rename}};
+
+\node[spd, right=11mm of kafka] (speed)
+  {\textbf{SPEED LAYER}\\{\tiny Spark Structured Streaming}\\{\tiny validate $\rightarrow$ enrich}\\{\tiny $\rightarrow$ window $\rightarrow$ alert}};
+\node[bth, right=11mm of landing] (batch)
+  {\textbf{BATCH LAYER}\\{\tiny Spark batch, via Airflow}\\{\tiny recompute $\rightarrow$ join}\\{\tiny $\rightarrow$ reconcile}};
+
+\node[sto, right=11mm of speed, yshift=6mm] (pg1) {Postgres \code{rt\_*}\\{\tiny live views}};
+\node[sto, below=4mm of pg1] (lake) {Parquet lake\\{\tiny master dataset}};
+\node[sto, below=4mm of lake] (pg2) {Postgres \code{daily\_*}\\{\tiny + HTML/CSV report}};
+
+\node[srv, right=10mm of lake] (api) {\textbf{SERVING}\\{\tiny FastAPI}\\{\tiny merges both views}\\{\tiny live dashboard}};
+
+\draw[ar] (tel) -- (kafka);
+\draw[ar] (exp) -- (landing);
+\draw[ar] (kafka) -- (speed);
+\draw[ar] (landing) -- (batch);
+\draw[ar] (speed.east) -- (pg1.west);
+\draw[ar] (speed.east) -- (lake.west);
+\draw[ar] (lake.south west) to[out=200,in=160] node[lbl,left=1pt] {recompute} (batch.north east);
+\draw[ar] (batch.east) -- (pg2.west);
+\draw[ar] (pg1.east) -- (api.north west);
+\draw[ar] (pg2.east) -- (api.south west);
+
+\begin{scope}[on background layer]
+  \node[fit=(tel)(exp), draw=rule, dashed, rounded corners, inner sep=5pt, label={[lbl]above:SOURCES}] {};
+  \node[fit=(kafka)(landing), draw=rule, dashed, rounded corners, inner sep=5pt, label={[lbl]above:INGESTION}] {};
+  \node[fit=(speed)(batch), draw=rule, dashed, rounded corners, inner sep=5pt, label={[lbl]above:PROCESSING}] {};
+  \node[fit=(pg1)(pg2)(lake), draw=rule, dashed, rounded corners, inner sep=5pt, label={[lbl]above:STORAGE}] {};
+  \node[fit=(api), draw=rule, dashed, rounded corners, inner sep=5pt, label={[lbl]above:SERVING}] {};
+\end{scope}
+\end{tikzpicture}
+\caption{End-to-end architecture. Blue is the speed path, orange the batch path, green storage.
+The master dataset is written by the speed layer and \emph{read back} by the batch layer --- the
+defining loop of a Lambda architecture.}
+\label{fig:architecture}
+\end{figure}
+
+\subsection{The master dataset is the pivot}
+The single most important structural decision is that the speed layer writes \emph{every parsed
+event to Parquet, including the ones it rejected}, and the batch layer reads that back rather than
+consuming Kafka itself. Two consequences follow:
+
+\begin{enumerate}
+  \item The batch layer can \emph{revise a decision the stream made}. If a validation rule is later
+        found to be too strict, the rejected rows are still in the master dataset with their
+        violation reasons attached, and yesterday can be recomputed under the corrected rule. Had
+        the speed layer filtered before writing, that data would be gone.
+  \item There is exactly one durable copy of raw history, and its retention is a storage decision
+        rather than a broker configuration.
+\end{enumerate}
+
+\subsection{Simulated clock}
+\label{sec:clock}
+As permitted by the brief, simulated time is compressed. \term{One simulated day elapses every 300
+real seconds}, a factor of $86400/300 = 288$:
+
+\begin{center}\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Real time} & \textbf{Simulated time} & \textbf{What happens} \\
+\midrule
+1 second & 4.8 minutes & $\sim$6 telemetry events \\
+12.5 seconds & 1 hour & one windowed aggregation closes \\
+5 minutes & 1 day & one expense file; one Airflow reconciliation \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Every downstream quantity is expressed in \emph{simulated} time --- the 60-minute window, the
+30-minute watermark, the 45-minute idle-alert threshold, the report date --- so each keeps its
+real-world meaning; only the wall-clock rate changes. All components must agree on where the
+calendar starts, so the first process to boot writes \code{/data/\_sim\_anchor.json} atomically
+(\code{O\_CREAT|O\_EXCL}) and every other process reads it. The compression factor is configurable
+via \code{SIM\_DAY\_SECONDS}.
+
+%=====================================================================
+\section{Technology Stack and Justification}
+
+Each choice below is argued from a constraint of \emph{this} use case rather than general
+popularity, and each names what was rejected.
+
+\begin{longtable}{@{}p{2.6cm}p{4.0cm}p{8.4cm}@{}}
+\caption{Technology selection.}\label{tab:stack}\\
+\toprule
+\textbf{Layer} & \textbf{Choice} & \textbf{Justification and rejected alternative} \\
+\midrule
+\endfirsthead
+\toprule
+\textbf{Layer} & \textbf{Choice} & \textbf{Justification and rejected alternative} \\
+\midrule
+\endhead
+Ingestion &
+Apache Kafka 7.3.2, topic \code{fleet.telemetry}, 3 partitions, keyed by \code{vehicle\_id} &
+Three properties are needed and Kafka has all three: \emph{partition-keyed ordering}, so one
+vehicle's events stay ordered while three consumers work in parallel --- the ``latest state per
+vehicle'' logic depends on it; \emph{retention}, so the speed layer can be restarted and resume
+without data loss; and \emph{fan-out}, so the quarantine stream is a first-class topic other
+consumers can subscribe to. \emph{Rejected:} Redis Streams and RabbitMQ --- adequate as transport,
+but neither offers durable partitioned replay, which is what makes restart-safety cheap here. \\
+\addlinespace
+Stream processing &
+Spark Structured Streaming 3.5.1 &
+Chosen over Storm principally because \emph{the batch layer needs an engine too}, and using Spark
+for both means the two layers share a language, a DataFrame API and the modules in \code{common/} ---
+directly reducing Lambda's duplication penalty. Structured Streaming also provides event-time
+windowing and watermarking natively, which this use case needs because event time is simulated and
+diverges from arrival time. \emph{Rejected:} Apache Storm --- genuinely lower per-event latency, but
+our budget is seconds, not milliseconds, so that advantage buys nothing while costing a second
+engine for the batch layer and a heavier local deployment. \\
+\addlinespace
+Orchestration &
+Apache Airflow 2.8.4, LocalExecutor &
+The daily job is not a single command on a timer; it is a dependency graph --- \emph{wait} for the
+file, \emph{run} the job, \emph{validate} what it wrote, \emph{mark} the day complete --- with
+retries, visible run history and the ability to re-run one date. Cron expresses none of that.
+Airflow's sensors and per-task retries map exactly onto this shape. \\
+\addlinespace
+Master dataset &
+Parquet on the shared volume, partitioned by \code{sim\_date} &
+The batch layer's access pattern is ``read exactly one date, project a dozen columns'', which is the
+pattern columnar storage with partition pruning is built for. Immutable append also matches
+Lambda's requirement that the master dataset be the durable record. \emph{Rejected:} keeping raw
+history in Kafka (expensive for cold data) or in Postgres rows (no columnar scan; the table grows
+without bound). \\
+\addlinespace
+Serving store &
+PostgreSQL 15 &
+Serving queries are small --- tens of vehicles, a few hundred window rows --- but their \emph{shape}
+is unpredictable: filters, joins between the live and daily tables, ordering by profit,
+\code{COUNT(*) FILTER}. That is SQL's strength. Equally important, \code{INSERT ... ON CONFLICT DO
+UPDATE} makes every write from both layers idempotent, which is what makes at-least-once delivery
+safe. \emph{Rejected:} Cassandra --- built for very high write throughput against known partition
+keys with no joins; we have neither the volume to need it nor the fixed query shapes it demands, and
+it would make idempotent upserts and ad-hoc reporting harder, not easier. \\
+\addlinespace
+Serving API &
+FastAPI + Uvicorn &
+Generates the OpenAPI documentation the demo uses, integrates with \code{prometheus\_client} in a
+few lines, and its middleware hook is where per-request metrics and structured logs are attached. \\
+\addlinespace
+Monitoring &
+Prometheus, Pushgateway, Grafana &
+Pull-based scraping suits containers that come and go. The Pushgateway exists specifically because
+the batch job lives $\sim$30 seconds and can never be scraped --- it pushes, grouped by
+\code{sim\_date}, so re-running a day replaces that day's sample. Alert rules live in version
+control as code. \\
+\addlinespace
+Packaging &
+Docker Compose, 14 services &
+Reproducibility is explicitly assessed. One command builds and starts the entire platform;
+\code{docker compose down -v} returns it to a clean state. \\
+\bottomrule
+\end{longtable}
+
+%=====================================================================
+\section{Data Ingestion}
+
+\subsection{Streaming source}
+\code{simulators/telemetry\_producer.py} simulates twelve vehicles, each running an
+\code{idle} $\rightarrow$ \code{enroute} $\rightarrow$ \code{on\_trip} $\rightarrow$ \code{idle}
+state machine and emitting position, speed, status and accrued fare every two real seconds. Design
+points that matter:
+
+\begin{itemize}
+  \item \term{Events are keyed by \code{vehicle\_id}}, so all of a vehicle's events hash to one
+        partition and stay mutually ordered. Without this the ``latest state'' upsert would be a race.
+  \item \term{Two timestamps per event.} \code{event\_time} is on the simulated clock and is the
+        event-time axis for windowing; \code{ingest\_time} is the real wall clock and exists to
+        measure pipeline lag. Conflating them would make lag unmeasurable.
+  \item \term{Fare is carried two ways.} \code{fare} is the running cumulative total of the current
+        trip; \code{fare\_increment} is what accrued since the vehicle's previous event. The speed
+        layer sums increments so a live earnings figure exists mid-trip; the batch layer takes the
+        final cumulative fare of each completed trip as authoritative revenue. \emph{The two
+        deliberately disagree slightly}, and that disagreement is the Lambda trade-off made visible.
+  \item \term{About 4\% of events are deliberately malformed} --- null position, negative speed,
+        unknown status, a fare accruing while parked. Telemetry from cheap in-vehicle units is not
+        clean, and the validation and quarantine path needs real work to do. A unit test asserts
+        that \emph{every} injected anomaly is actually rejected, so the quarantine path cannot
+        silently pass dirty data.
+  \item \term{An \code{event\_id} is minted at the source} and never rewritten. It is the
+        correlation id used for tracing (\S\ref{sec:observability}).
+\end{itemize}
+
+\subsection{Daily-batch source}
+\code{simulators/expense\_batch\_source.py} writes one CSV per simulated day
+(\code{vehicle\_id, fuel\_cost, maintenance\_cost, distance\_covered, service\_flag}). Two properties
+were built in deliberately:
+
+\begin{itemize}
+  \item \term{Atomic publication.} The file is written to a \code{.tmp} name and then
+        \code{os.replace}d into position. Rename within a filesystem is atomic; a streaming write is
+        not. Without this, Airflow's sensor could observe --- and the batch layer could parse --- a
+        half-written file. A test asserts no \code{.tmp} file survives publication.
+  \item \term{Realistic imperfection.} Roughly 5\% of vehicles are missing from the file (the
+        partner did not report them) and about 10\% report a distance that disagrees sharply with
+        the GPS track. Both are situations the batch layer must survive: the join is a left join so
+        a missing row does not delete a vehicle from the report, and the distance disagreement is
+        precisely what the reconciliation exists to surface.
+\end{itemize}
+
+Both simulators build their vehicle list from the same deterministic roster in
+\code{common/fleet.py}, seeded with a fixed value. This is what makes the two feeds describe the
+\emph{same} fleet rather than two unrelated sets of random numbers, and it makes a demo reproducible.
+
+%=====================================================================
+\section{Processing}
+
+\subsection{Speed layer}
+Two Structured Streaming queries run in one application, so that a slow sink in one cannot stall the
+other's watermark.
+
+\paragraph{Query \code{ingest-and-state} (10\,s trigger).} Parses the JSON payload against an
+explicit schema, applies the validation rules as a UDF wrapping \code{common/validation.py},
+enriches valid rows with an operating zone (a $3\times2$ grid over the city bounding box), then
+performs four side effects inside one \code{foreachBatch}: appends every row to the Parquet master
+dataset; republishes rejected rows to \code{fleet.telemetry.quarantine} with their violation reasons;
+upserts each vehicle's newest state into Postgres; and raises idle alerts.
+
+\paragraph{Query \code{zone-windows} (15\,s trigger).} Tumbling 60-simulated-minute windows per zone
+with a 30-simulated-minute watermark, producing events, active vehicles, idle ratio, trips, earnings
+and mean speed, upserted on \code{(window\_start, zone)}.
+
+\paragraph{Three implementation decisions worth defending.}
+\begin{enumerate}
+  \item \term{Approximation is deliberate, not a shortcut.} \code{approx\_count\_distinct}
+        (HyperLogLog) is used for vehicle and trip counts. Exact \code{countDistinct} is not
+        supported in a streaming aggregation, and a fast approximate answer is exactly the speed
+        layer's contract. The batch layer counts the same quantities exactly.
+  \item \term{Idle state is maintained in SQL, not in Spark state.} The \code{idle\_since} column is
+        set by a \code{CASE} inside the upsert: it is preserved while the vehicle remains idle,
+        cleared the moment it moves. An idle \emph{spell} therefore keeps its start time across
+        micro-batches, and ``idle for 45 minutes'' measures the spell rather than the batch. Alerts
+        become a query, and a unique constraint on
+        \code{(alert\_type, vehicle\_id, idle\_since)} yields one alert per spell instead of one per
+        trigger. This was chosen over \code{flatMapGroupsWithState} because the alerting rule needs
+        to be queryable by the serving layer anyway.
+  \item \term{The upsert refuses to move backwards.} The statement carries
+        \code{WHERE EXCLUDED.last\_event\_time >= rt\_vehicle\_state.last\_event\_time}, so a
+        replayed or out-of-order micro-batch cannot rewind the live view --- necessary because
+        delivery is at-least-once.
+\end{enumerate}
+
+\subsection{Batch layer}
+\code{batch\_layer/daily\_reconciliation.py} recomputes a simulated day from scratch:
+
+\begin{itemize}
+  \item \term{Revenue} $=$ the final cumulative fare of every completed trip, computed as
+        \code{max(fare)} grouped by \code{(vehicle\_id, trip\_id)}. \code{max} rather than
+        ``last event'' is deliberate: the master dataset is a union of micro-batches with no global
+        ordering, so an order-dependent definition would not be reproducible.
+  \item \term{Distance} $=$ haversine over consecutive GPS fixes, using a window function
+        partitioned by vehicle and ordered by event time. Segments longer than 25\,km between
+        consecutive fixes are discarded as bad fixes rather than allowed to dominate the day.
+  \item \term{Utilisation} $=$ the share of a vehicle's events not spent idle.
+  \item \term{Join} --- left joins throughout, on \code{vehicle\_id}. A vehicle that drove but was
+        never invoiced, and one invoiced but never seen, are both real situations that must appear
+        in the report rather than vanish from it.
+  \item \term{Reconciliation} --- profit, margin, revenue per km, and the percentage variance
+        between GPS distance and billed distance. Vehicles are flagged \emph{unprofitable}
+        (margin below 10\%) or \emph{distance disputed} (variance above 20\%).
+\end{itemize}
+
+The job reads its expense CSV with an \emph{explicit} schema rather than \code{inferSchema}: a day
+in which every maintenance cost happened to be a whole number would otherwise arrive as integers and
+silently change the arithmetic. Every write is an upsert keyed on \code{(sim\_date, vehicle\_id)},
+so re-running a day --- the correction path argued for in \S2 --- replaces it rather than doubling it.
+
+\subsection{Orchestration}
+The DAG \code{fleet\_daily\_batch} runs every five real minutes (one simulated day):
+
+\begin{center}\small
+\code{find\_pending\_day} $\rightarrow$ \code{wait\_for\_master\_dataset} $\rightarrow$
+\code{run\_batch\_layer} $\rightarrow$ \code{validate\_output} $\rightarrow$
+\code{mark\_processed} $\rightarrow$ \code{announce}
+\end{center}
+
+It deliberately does \emph{not} key off Airflow's logical date. It discovers work by finding an
+expense file with no completion marker, which means a failed run retries the same day, a late file is
+still processed, and re-running a day is a deliberate, safe act (delete the marker). Ticks with
+nothing to do end as \emph{skipped}, which is the intended outcome on most five-minute boundaries.
+
+\code{validate\_output} is a genuine quality gate, not decoration: it checks the audit row reports
+success, that a fleet summary exists, that revenue and cost are non-negative, that no vehicle row has
+a null profit, and that the HTML report was actually rendered. If any check fails the day is left
+unmarked and the run fails visibly, rather than a bad report reaching the dashboard.
+
+%=====================================================================
+\section{Storage and Serving}
+
+\subsection{Schema}
+The serving store separates the two views by naming convention, because a reader must be able to
+tell them apart: \code{rt\_*} tables are speed-layer output (approximate, seconds old, continuously
+overwritten); \code{daily\_*} tables are batch-layer output (authoritative, one simulated day
+behind); \code{batch\_run\_audit} records provenance --- which run produced which numbers, how long
+it took, and how many rows it read.
+
+Every table has a natural primary key --- \code{rt\_vehicle\_state(vehicle\_id)},
+\code{rt\_zone\_metrics(window\_start, zone)},
+\code{daily\_vehicle\_profitability(sim\_date, vehicle\_id)} --- which is what allows both layers to
+write idempotently and makes at-least-once delivery safe in the serving store.
+
+\subsection{Serving layer and the merge}
+The serving layer's defining job in Lambda is not to expose the database; it is to present both
+views while keeping them distinguishable. Every response carries \code{view} and \code{accuracy}
+fields. \code{/api/fleet/vehicles/\{id\}} performs the merge explicitly, returning live state
+alongside the last authoritative day and a seven-day history.
+\code{/api/lambda/compare/\{sim\_date\}} exists purely to quantify the residual gap between the two
+views --- it is the endpoint that turns the architectural argument of \S2 into a measured number.
+
+\screenshot{dashboard.png}{The live dashboard at \code{http://localhost:8000}: speed-layer tiles and
+per-window earnings above, the authoritative daily reconciliation below, and the measured speed/batch
+difference at bottom right.}{0.95}
+
+\screenshot{report.png}{The daily per-vehicle profitability reconciliation report, sorted worst-first,
+with unprofitable, disputed-distance and missing-expense-data vehicles flagged.}{0.95}
+
+%=====================================================================
+\section{Observability Design}
+\label{sec:observability}
+
+The guiding principle is that \term{data pipelines fail silently}. A crashed producer, a stalled
+stream and a batch job that never ran all look identical from the outside: no errors, no exceptions,
+just numbers that quietly stop moving. Consequently most alerting here is on \emph{the age of the
+output}, not on error counts.
+
+\subsection{Structured logging --- across all stages}
+Every component --- both simulators, both Spark layers, the API, and the Airflow tasks --- emits one
+JSON object per line through \code{common/logging\_setup.py}, with a uniform shape: \code{ts},
+\code{level}, \code{component}, \code{stage}, \code{event}, plus call-site context. \code{stage} is
+one of \code{ingest}, \code{process}, \code{store}, \code{serve}, \code{orchestrate}, so logs can be
+sliced by pipeline layer regardless of which process produced them. Key events include
+\code{micro\_batch\_complete} (with \code{events}, \code{clean}, \code{quarantined},
+\code{vehicles\_updated}, \code{ingest\_lag\_seconds}), \code{alert\_raised},
+\code{expense\_file\_published}, \code{batch\_run\_succeeded} and \code{batch\_run\_failed}.
+
+\subsection{Tracing --- correlation across stages}
+Full distributed tracing (OpenTelemetry spans) was judged disproportionate for a pipeline whose
+hops are a Kafka topic and a Parquet write. Instead, three correlation identifiers make an
+end-to-end path reconstructable:
+
+\begin{itemize}
+  \item \term{\code{event\_id}} --- minted per telemetry event at the source, carried into the
+        Parquet master dataset and into any quarantine record. One event can therefore be followed
+        from the producer log, through the quarantine topic, to its row in the lake.
+  \item \term{Kafka coordinates} --- \code{kafka\_partition} and \code{kafka\_offset} are stored
+        with every row in the master dataset, so any row can be traced back to its exact position in
+        the log.
+  \item \term{\code{run\_id}} --- generated per batch run, written onto every output row, into
+        \code{batch\_run\_audit}, and derived from the Airflow run identifier, so a number in the
+        report traces back to the DAG run and its task logs.
+\end{itemize}
+
+\subsection{Metrics}
+Every long-running component exposes \code{/metrics}; the batch job pushes to a Pushgateway because
+a 30-second process can never be scraped. What is measured, and why:
+
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}llX@{}}
+\toprule
+\textbf{Stage} & \textbf{Metric} & \textbf{Why it exists} \\
+\midrule
+Ingest & \code{fleet\_telemetry\_events\_total} & throughput, by vehicle status \\
+Ingest & \code{fleet\_telemetry\_last\_event\_unixtime} & the freshness signal a silent stall shows up in \\
+Ingest & \code{fleet\_expense\_last\_file\_unixtime} & detects a daily feed that stopped arriving \\
+Process & \code{speed\_events\_total\{outcome\}} & clean vs quarantined, the data-quality ratio \\
+Process & \code{speed\_violations\_total\{rule\}} & \emph{which} rule is firing, for diagnosis \\
+Process & \code{speed\_batch\_duration\_seconds} & rising duration at a fixed trigger predicts falling behind \\
+Process & \code{speed\_ingest\_lag\_seconds} & real time between ingestion and processing \\
+Process & \code{speed\_batch\_failures\_total} & micro-batches that raised \\
+Store & \code{speed\_rows\_written\_total\{sink\}} & per-sink write volume \\
+Batch & \code{fleet\_batch\_*} (pushed) & rows in/out, duration, revenue, profit, flags \\
+Serve & \code{api\_requests\_total}, \code{api\_request\_duration\_seconds} & rate, errors, duration \\
+Serve & \code{api\_speed\_view\_age\_seconds}, \code{api\_batch\_view\_age\_seconds} & how stale each Lambda view is, as served \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Alerting}
+Sixteen rules in \code{observability/alert\_rules.yml}, grouped by layer. Representative examples:
+
+\begin{itemize}
+  \item \code{NoTelemetryIngested} --- no event published for 60\,s. The single most important rule:
+        it is the one that distinguishes ``healthy'' from ``frozen''.
+  \item \code{SpeedLayerStalled} --- no micro-batch completed for 90\,s, per query.
+  \item \code{HighQuarantineRate} --- more than 25\% of the stream failing validation for 3
+        minutes. Some malformed telemetry is normal; a sustained quarter of it is an upstream
+        device or schema problem.
+  \item \code{BatchOutputStale} --- no successful reconciliation for 15 minutes, i.e.\ three
+        consecutive simulated days unreconciled.
+  \item \code{BatchDroppingData} --- fewer than half a day's rows passed validation, meaning the
+        report is built on a thin sample even though the job ``succeeded''.
+  \item \code{FleetUnprofitable} --- a \emph{business} alert on an ops dashboard by design: the
+        fastest way to notice a pipeline that is healthy but producing nonsense.
+\end{itemize}
+
+Health checks complement the alerts: \code{/health} verifies database reachability rather than
+merely returning 200, and container health checks gate startup ordering in Compose.
+
+\screenshot{grafana.png}{Grafana ``Fleet pipeline health'': ingestion rate and freshness, quarantine
+ratio, micro-batch duration and ingest lag, batch rows and reconciled profit, API rate and p95
+latency, and the age of each Lambda view.}{0.95}
+
+%=====================================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Verification}
+% RESULTS-PLACEHOLDER: replace the figures in this subsection with the values printed by
+% `python scripts/smoke_check.py` and `/api/lambda/compare/<date>` from your own run.
+The platform was run end to end. \code{scripts/smoke\_check.py} verifies each layer in turn ---
+API health, speed-layer state writes, windowed aggregation, threshold alerts, batch reconciliation,
+the speed/batch comparison, and Prometheus targets and rules --- reporting each as
+\code{PASS}/\code{PENDING}/\code{FAIL}. Components that legitimately need more simulated time report
+\code{PENDING} rather than failing, so the check is meaningful from the first seconds of a run.
+
+\subsection{Observed speed/batch divergence}
+The measured gap between the speed layer's windowed earnings and the batch layer's authoritative
+revenue for the same simulated day is reported by \code{/api/lambda/compare/<date>}. The gap is
+expected and has three identifiable sources, in decreasing order of size: events arriving after the
+watermark are excluded from the windowed sum but present in the master dataset; fare increments are
+summed continuously whereas batch revenue counts only \emph{completed} trips, so a trip in flight at
+midnight contributes to one and not the other; and \code{approx\_count\_distinct} introduces a small
+error in the trip count. \emph{That this number is small but non-zero is the empirical justification
+for the architecture} --- it is precisely the error the batch layer exists to correct.
+
+\subsection{Testing}
+The repository contains \term{76 automated tests} that require no broker, no Spark and no database,
+covering: the simulated clock's compression, day boundaries and shared-anchor race; zone assignment
+swept across the whole operating area; haversine against known distances; every validation rule
+individually and in combination; the profitability arithmetic and its threshold behaviour at the
+boundaries; the report renderer, including that it is self-contained and that missing values render
+as a dash rather than \code{None}; and that every deliberately corrupted event is actually rejected.
+
+The suite found three real defects during development, the most instructive being a producer that
+computed a fare increment before applying the state transition, so a vehicle ending a trip emitted
+an \code{idle} event still carrying a fare --- the producer was manufacturing its own quarantine
+traffic and inflating the data-quality metric. That is exactly the class of bug that is invisible in
+a running pipeline and obvious in a unit test.
+
+%=====================================================================
+\section{Limitations and Production Scale}
+\label{sec:production}
+
+\subsection{Limitations of what was built}
+\begin{itemize}
+  \item \term{Spark runs in local mode}, inside the speed-layer container and inside the Airflow
+        worker. The code is unchanged on a cluster --- the same \code{spark-submit} takes a
+        different \code{--master} --- but no distributed behaviour (shuffle across executors, node
+        loss, speculative execution) is exercised.
+  \item \term{Single broker, replication factor 1.} \code{acks=all} therefore means ``the one
+        replica has it''. Real durability needs three brokers and \code{min.insync.replicas=2}.
+  \item \term{At-least-once, not exactly-once.} A crash between a sink write and the offset commit
+        replays that micro-batch. Idempotent upserts make the \emph{effect} at-most-once in the
+        serving store, but the Parquet master dataset can contain duplicate rows after a restart.
+        The batch layer's \code{max(fare)} per trip is deliberately duplicate-insensitive; its row
+        counts are not.
+  \item \term{No compaction.} A 10-second trigger produces many small Parquet files --- the classic
+        small-files problem. Not solved here.
+  \item \term{The expense source is correlated by construction, not by observation.} It derives
+        plausible costs from the shared roster's baseline duty cycle rather than from the actual GPS
+        track, so the reconciliation variance is realistic in shape but is not a true independent
+        measurement.
+  \item \term{Security is absent by design} --- no TLS, no SASL, no API authentication, default
+        credentials in \code{docker-compose.yml}.
+\end{itemize}
+
+\subsection{What would change at production scale}
+\begin{enumerate}
+  \item \term{Storage format.} Replace raw Parquet with Delta Lake or Apache Iceberg: ACID appends,
+        automatic compaction, schema evolution and time travel --- the last of which makes ``restate
+        that day'' a first-class operation rather than a convention.
+  \item \term{Schema enforcement at the wire.} Move the telemetry payload from JSON to Avro with a
+        Schema Registry (as built for the Chapter 3 assignment), so a producer cannot silently ship
+        an incompatible field. JSON was chosen here for inspectability during a demo; that is the
+        wrong trade at scale.
+  \item \term{Exactly-once.} An idempotent sink keyed on \code{event\_id}, or Kafka transactions
+        spanning the sink write and the offset commit.
+  \item \term{Elastic execution.} Spark on Kubernetes or EMR/Databricks, with the speed layer
+        autoscaled on consumer lag rather than fixed at two cores.
+  \item \term{Tiered retry topics} instead of in-line retries, so a slow downstream never blocks a
+        partition.
+  \item \term{Alertmanager and on-call routing.} Rules currently fire in Prometheus with no
+        destination; production needs routing, grouping, inhibition and silences.
+  \item \term{Data-quality as a product.} The validation rules deserve a published contract, a
+        quarantine review workflow and a rule-level SLO, rather than living only as a code module.
+\end{enumerate}
+
+%=====================================================================
+\section{Conclusion}
+
+The platform ingests a continuous telemetry stream and a once-per-simulated-day expense file,
+processes both through a speed layer and a batch layer, stores an immutable master dataset alongside
+two clearly-labelled derived views, and answers the use case's two-part business question through a
+live dashboard, a REST API and a daily reconciliation report --- with structured logging, metrics,
+correlation identifiers and sixteen alert rules covering every stage.
+
+The architectural claim it rests on is narrow and, I think, defensible: Lambda was selected not
+because streaming is insufficient, but because this use case has \emph{two different correctness
+contracts over the same events} --- one that must be fast and may be approximate, one that must be
+exact and restatable against an externally supplied file. Kappa can be made to serve both, but only
+by simulating batch semantics inside a stream. Lambda's cost is the duplicated logic, which this
+implementation reduces by sharing the business rules between layers and then \emph{measures} what
+remains, rather than claiming to have eliminated it.
+
+\vspace{0.5cm}
+\noindent\fcolorbox{rule}{soft}{\parbox{0.97\textwidth}{\vspace{2pt}\small
+\textbf{Assumptions and simplifications declared.} Simulated time is compressed 288$\times$ (one
+simulated day $=$ 300 real seconds, \S\ref{sec:clock}). Both data sources are simulated Python
+scripts, and share a deterministic vehicle roster so they describe the same fleet. The downstream
+``cost partner'' is not a real system. Spark runs in local mode; Kafka runs as a single broker with
+replication factor 1. Monetary values are nominal LKR. \emph{Submission type:} individual.
+\vspace{2pt}}}
+
+\vspace{0.4cm}
+\noindent\small\textbf{Repository contents.} \code{README.md} (architecture summary, setup, the
+five-minute demo script, troubleshooting), \code{docker-compose.yml} (14 services),
+\code{common/} (shared modules), \code{simulators/}, \code{speed\_layer/}, \code{batch\_layer/},
+\code{serving/}, \code{airflow/dags/}, \code{sql/}, \code{observability/} (Prometheus, alert rules,
+Grafana), \code{scripts/} (smoke check, evidence export), \code{tests/} (76 tests).
+
+\end{document}

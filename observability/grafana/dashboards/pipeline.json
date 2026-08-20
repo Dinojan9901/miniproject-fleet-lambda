@@ -1,0 +1,246 @@
+{
+  "uid": "fleet-pipeline",
+  "title": "Fleet pipeline health",
+  "description": "Operational view of the Lambda pipeline: ingestion, speed layer, batch layer, serving. The business dashboard lives at http://localhost:8000/ -- this one is about whether the pipeline itself is working.",
+  "tags": ["fleet", "lambda", "pipeline"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "10s",
+  "time": {"from": "now-30m", "to": "now"},
+  "templating": {"list": []},
+  "annotations": {"list": []},
+  "panels": [
+    {
+      "type": "row", "title": "Ingestion", "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "panels": []
+    },
+    {
+      "type": "stat", "title": "Telemetry events / sec",
+      "gridPos": {"h": 5, "w": 5, "x": 0, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {
+        "defaults": {"unit": "reqps", "decimals": 1,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "red", "value": null}, {"color": "green", "value": 0.5}]}},
+        "overrides": []
+      },
+      "options": {"colorMode": "value", "graphMode": "area", "textMode": "auto",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"refId": "A", "expr": "sum(rate(fleet_telemetry_events_total[1m]))",
+        "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "stat", "title": "Seconds since last event",
+      "description": "The alert that matters most: a pipeline with no input looks healthy from every other angle.",
+      "gridPos": {"h": 5, "w": 5, "x": 5, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {
+        "defaults": {"unit": "s", "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "#EAB839", "value": 30}, {"color": "red", "value": 60}]}},
+        "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"refId": "A", "expr": "time() - fleet_telemetry_last_event_unixtime",
+        "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "timeseries", "title": "Events emitted by vehicle status",
+      "gridPos": {"h": 5, "w": 8, "x": 10, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 2, "fillOpacity": 8,
+        "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"refId": "A", "expr": "sum by (status) (rate(fleet_telemetry_events_total[1m]))",
+        "legendFormat": "{{status}}", "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "timeseries", "title": "Injected source anomalies",
+      "description": "Deliberately malformed telemetry, by kind. These are what the speed layer quarantines.",
+      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 2, "fillOpacity": 8,
+        "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi"}},
+      "targets": [{"refId": "A", "expr": "sum by (kind) (rate(fleet_telemetry_anomalies_total[5m]))",
+        "legendFormat": "{{kind}}", "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+
+    {
+      "type": "row", "title": "Speed layer", "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 6}, "panels": []
+    },
+    {
+      "type": "timeseries", "title": "Processed vs quarantined",
+      "gridPos": {"h": 6, "w": 9, "x": 0, "y": 7},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 2, "fillOpacity": 10,
+        "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(speed_events_total[1m]))",
+        "legendFormat": "{{outcome}}", "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "stat", "title": "Quarantine ratio",
+      "gridPos": {"h": 6, "w": 4, "x": 9, "y": 7},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {
+        "defaults": {"unit": "percentunit", "decimals": 1, "max": 1, "min": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "#EAB839", "value": 0.15}, {"color": "red", "value": 0.25}]}},
+        "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"refId": "A",
+        "expr": "sum(rate(speed_events_total{outcome=\"quarantined\"}[5m])) / clamp_min(sum(rate(speed_events_total[5m])), 0.001)",
+        "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "timeseries", "title": "Micro-batch duration (mean)",
+      "description": "Rising duration with a fixed trigger interval is the early warning that the stream is about to fall behind.",
+      "gridPos": {"h": 6, "w": 6, "x": 13, "y": 7},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2, "fillOpacity": 8,
+        "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi"}},
+      "targets": [{"refId": "A",
+        "expr": "rate(speed_batch_duration_seconds_sum[5m]) / clamp_min(rate(speed_batch_duration_seconds_count[5m]), 0.001)",
+        "legendFormat": "{{query}}", "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "stat", "title": "Ingest lag",
+      "gridPos": {"h": 6, "w": 5, "x": 19, "y": 7},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {
+        "defaults": {"unit": "s", "decimals": 1,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "#EAB839", "value": 60}, {"color": "red", "value": 120}]}},
+        "overrides": []
+      },
+      "options": {"colorMode": "value", "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"refId": "A", "expr": "speed_ingest_lag_seconds",
+        "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+
+    {
+      "type": "row", "title": "Batch layer", "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 13}, "panels": []
+    },
+    {
+      "type": "stat", "title": "Since last successful run",
+      "gridPos": {"h": 5, "w": 5, "x": 0, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {
+        "defaults": {"unit": "s", "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "#EAB839", "value": 600}, {"color": "red", "value": 900}]}},
+        "overrides": []
+      },
+      "options": {"colorMode": "background", "graphMode": "none",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"refId": "A", "expr": "time() - max(fleet_batch_last_success_unixtime)",
+        "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "timeseries", "title": "Rows read per reconciliation",
+      "gridPos": {"h": 5, "w": 9, "x": 5, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 8,
+        "showPoints": "auto", "drawStyle": "line"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"refId": "A", "expr": "max(fleet_batch_telemetry_rows)", "legendFormat": "telemetry rows",
+          "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}},
+        {"refId": "B", "expr": "max(fleet_batch_clean_rows)", "legendFormat": "passed validation",
+          "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}},
+        {"refId": "C", "expr": "max(fleet_batch_quarantined_rows)", "legendFormat": "quarantined",
+          "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}
+      ]
+    },
+    {
+      "type": "timeseries", "title": "Reconciled profit per simulated day",
+      "description": "A business metric on the ops dashboard on purpose: it is the fastest way to notice the pipeline is healthy but producing nonsense.",
+      "gridPos": {"h": 5, "w": 6, "x": 14, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "short", "custom": {"lineWidth": 2, "fillOpacity": 10,
+        "showPoints": "auto"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "single"}},
+      "targets": [{"refId": "A", "expr": "max by (sim_date) (fleet_batch_profit)",
+        "legendFormat": "{{sim_date}}", "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "stat", "title": "Vehicles flagged",
+      "gridPos": {"h": 5, "w": 4, "x": 20, "y": 14},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {
+        "defaults": {"unit": "short", "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "#EAB839", "value": 1}, {"color": "red", "value": 4}]}},
+        "overrides": []
+      },
+      "options": {"colorMode": "value", "graphMode": "area",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [{"refId": "A", "expr": "max(fleet_batch_unprofitable_vehicles)",
+        "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+
+    {
+      "type": "row", "title": "Serving", "collapsed": false,
+      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 19}, "panels": []
+    },
+    {
+      "type": "timeseries", "title": "API requests by endpoint",
+      "gridPos": {"h": 6, "w": 9, "x": 0, "y": 20},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "reqps", "custom": {"lineWidth": 2, "fillOpacity": 8,
+        "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"refId": "A", "expr": "sum by (endpoint) (rate(api_requests_total[1m]))",
+        "legendFormat": "{{endpoint}}", "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "timeseries", "title": "API p95 latency",
+      "gridPos": {"h": 6, "w": 9, "x": 9, "y": 20},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {"defaults": {"unit": "s", "custom": {"lineWidth": 2, "fillOpacity": 6,
+        "showPoints": "never"}}, "overrides": []},
+      "options": {"legend": {"displayMode": "list", "placement": "bottom", "showLegend": true},
+        "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"refId": "A",
+        "expr": "histogram_quantile(0.95, sum by (le, endpoint) (rate(api_request_duration_seconds_bucket[5m])))",
+        "legendFormat": "{{endpoint}}", "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}]
+    },
+    {
+      "type": "stat", "title": "View freshness",
+      "description": "How old each of the two Lambda views is, as served to the dashboard.",
+      "gridPos": {"h": 6, "w": 6, "x": 18, "y": 20},
+      "datasource": {"type": "prometheus", "uid": "fleet-prometheus"},
+      "fieldConfig": {
+        "defaults": {"unit": "s", "decimals": 0,
+          "thresholds": {"mode": "absolute", "steps": [
+            {"color": "green", "value": null}, {"color": "#EAB839", "value": 120}, {"color": "red", "value": 900}]}},
+        "overrides": []
+      },
+      "options": {"colorMode": "value", "graphMode": "none", "orientation": "horizontal",
+        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}},
+      "targets": [
+        {"refId": "A", "expr": "api_speed_view_age_seconds", "legendFormat": "speed view",
+          "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}},
+        {"refId": "B", "expr": "api_batch_view_age_seconds", "legendFormat": "batch view",
+          "datasource": {"type": "prometheus", "uid": "fleet-prometheus"}}
+      ]
+    }
+  ]
+}

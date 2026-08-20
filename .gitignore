@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.idea/
+.vscode/
+.DS_Store
+
+# Runtime output: the lake, landing files, checkpoints and rendered reports all
+# live in a Docker volume. Anything copied out with scripts/fetch_reports.ps1
+# lands here and is evidence, not source.
+data/
+*.log
+
+# LaTeX build artefacts
+report/*.aux
+report/*.log
+report/*.out
+report/*.toc
+report/*.fls
+report/*.fdb_latexmk
+report/*.synctex.gz

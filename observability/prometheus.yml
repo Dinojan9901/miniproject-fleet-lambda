@@ -1,0 +1,47 @@
+# Prometheus scrape configuration.
+#
+# Every long-running component exposes /metrics and is scraped. The batch layer
+# is the exception: it runs for ~30 seconds and exits, so it *pushes* to the
+# Pushgateway instead, and Prometheus scrapes that. honor_labels keeps the
+# job/sim_date labels the batch job set rather than overwriting them with the
+# gateway's own.
+
+global:
+  scrape_interval: 10s
+  evaluation_interval: 15s
+  external_labels:
+    project: fleet-lambda
+
+rule_files:
+  - /etc/prometheus/alert_rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: telemetry-producer
+    static_configs:
+      - targets: ["telemetry-producer:8001"]
+        labels: {layer: ingestion}
+
+  - job_name: expense-source
+    static_configs:
+      - targets: ["expense-source:8003"]
+        labels: {layer: ingestion}
+
+  - job_name: speed-layer
+    static_configs:
+      - targets: ["speed-layer:8002"]
+        labels: {layer: speed}
+
+  - job_name: serving-api
+    static_configs:
+      - targets: ["api:8000"]
+        labels: {layer: serving}
+
+  - job_name: batch-layer
+    honor_labels: true
+    static_configs:
+      - targets: ["pushgateway:9091"]
+        labels: {layer: batch}

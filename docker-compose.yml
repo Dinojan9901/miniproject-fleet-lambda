@@ -1,0 +1,340 @@
+# Fleet Lambda pipeline -- the whole platform.
+#
+#   ingestion   zookeeper, kafka, kafka-init, telemetry-producer, expense-source
+#   speed       speed-layer (Spark Structured Streaming)
+#   batch       airflow-scheduler / -webserver  ->  spark-submit batch layer
+#   storage     postgres (serving store) + the fleet-data volume (lake, reports)
+#   serving     api (+ live dashboard)
+#   ops         prometheus, pushgateway, grafana
+#
+# Ports on the host:
+#   8000 dashboard + API      8080 Kafka UI is NOT used here (see Chapter 3)
+#   8088 Airflow              3000 Grafana        9090 Prometheus
+#   9091 Pushgateway          4040 Spark UI       29092 Kafka     5432 Postgres
+#
+# Needs roughly 8 GB of RAM available to Docker.
+
+# Exactly one service per image declares `build:`; the rest reference the built
+# tag. Declaring the same build on several services makes Compose schedule
+# duplicate build targets that cancel each other.
+x-app-image: &app-image
+  image: fleet-lambda/app:1.0
+
+x-airflow-image: &airflow-image
+  image: fleet-lambda/airflow:1.0
+
+x-app-env: &app-env
+  BOOTSTRAP_SERVERS: kafka:9092
+  POSTGRES_HOST: postgres
+  POSTGRES_DB: fleet
+  POSTGRES_USER: fleet
+  POSTGRES_PASSWORD: fleet
+  DATA_DIR: /data
+  PUSHGATEWAY_URL: http://pushgateway:9091
+  SIM_DAY_SECONDS: "${SIM_DAY_SECONDS:-300}"
+  SIM_EPOCH_DATE: "${SIM_EPOCH_DATE:-2026-08-01}"
+  FLEET_SIZE: "${FLEET_SIZE:-12}"
+  ANOMALY_RATE: "${ANOMALY_RATE:-0.04}"
+  EVENT_INTERVAL_SECONDS: "${EVENT_INTERVAL_SECONDS:-2.0}"
+  WINDOW_MINUTES: "${WINDOW_MINUTES:-60}"
+  WATERMARK_MINUTES: "${WATERMARK_MINUTES:-30}"
+  IDLE_ALERT_MINUTES: "${IDLE_ALERT_MINUTES:-45}"
+  LOG_LEVEL: "${LOG_LEVEL:-INFO}"
+
+services:
+
+  # ------------------------------------------------------------------ ingestion
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.2
+    container_name: fleet-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    healthcheck:
+      test: ["CMD-SHELL", "echo > /dev/tcp/localhost/2181 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  kafka:
+    image: confluentinc/cp-kafka:7.3.2
+    container_name: fleet-kafka
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    ports:
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_LOG_RETENTION_HOURS: 24
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:9092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 18
+      start_period: 25s
+
+  # Topics are created explicitly, with deliberate partition counts:
+  # telemetry is keyed by vehicle across 3 partitions so per-vehicle ordering
+  # survives parallel consumption; quarantine and alerts are low volume and take
+  # a single partition, which also gives them a total order for triage.
+  kafka-init:
+    image: confluentinc/cp-kafka:7.3.2
+    container_name: fleet-kafka-init
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      set -e
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+        --topic fleet.telemetry --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+        --topic fleet.telemetry.quarantine --partitions 1 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
+        --topic fleet.alerts --partitions 1 --replication-factor 1
+      echo '--- topics ---'
+      kafka-topics --bootstrap-server kafka:9092 --list
+      "
+    restart: "no"
+
+  # The one service that builds the shared application image.
+  telemetry-producer:
+    <<: *app-image
+    build:
+      context: .
+      dockerfile: docker/app/Dockerfile
+    container_name: fleet-telemetry-producer
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment: *app-env
+    volumes:
+      - ./:/opt/project
+      - fleet-data:/data
+    command: ["python", "-m", "simulators.telemetry_producer"]
+    restart: unless-stopped
+
+  expense-source:
+    <<: *app-image
+    container_name: fleet-expense-source
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment: *app-env
+    volumes:
+      - ./:/opt/project
+      - fleet-data:/data
+    command: ["python", "-m", "simulators.expense_batch_source"]
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------- storage
+  postgres:
+    image: postgres:15-alpine
+    container_name: fleet-postgres
+    environment:
+      POSTGRES_DB: fleet
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet
+    ports:
+      - "5432:5432"
+    volumes:
+      - fleet-postgres:/var/lib/postgresql/data
+      # Runs alphabetically on first start: databases, then the pipeline schema.
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleet -d fleet"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # ---------------------------------------------------------------- speed layer
+  speed-layer:
+    <<: *app-image
+    container_name: fleet-speed-layer
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    environment: *app-env
+    ports:
+      - "4040:4040"      # Spark UI: streaming query progress, useful in the demo
+    volumes:
+      - ./:/opt/project
+      - fleet-data:/data
+    command: >
+      spark-submit
+      --master local[2]
+      --driver-memory 1g
+      --conf spark.sql.streaming.metricsEnabled=true
+      /opt/project/speed_layer/stream_job.py
+    restart: unless-stopped
+
+  # ------------------------------------------------------------------- serving
+  api:
+    <<: *app-image
+    container_name: fleet-api
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: *app-env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./:/opt/project
+      - fleet-data:/data
+    command: ["uvicorn", "serving.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
+
+  # -------------------------------------------------------------- orchestration
+  # The one service that builds the Airflow image.
+  airflow-init:
+    <<: *airflow-image
+    build:
+      context: .
+      dockerfile: docker/airflow/Dockerfile
+    container_name: fleet-airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://fleet:fleet@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      # Unpaused on creation so a fresh `docker compose up` starts reconciling
+      # without anyone clicking a toggle first.
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: fleet-lambda-demo
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "true"
+      AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "30"
+      AIRFLOW__LOGGING__LOGGING_LEVEL: INFO
+      PYTHONPATH: /opt/project
+      PROJECT_DIR: /opt/project
+      DATA_DIR: /data
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: fleet
+      POSTGRES_USER: fleet
+      POSTGRES_PASSWORD: fleet
+      PUSHGATEWAY_URL: http://pushgateway:9091
+      SIM_DAY_SECONDS: "${SIM_DAY_SECONDS:-300}"
+      SIM_EPOCH_DATE: "${SIM_EPOCH_DATE:-2026-08-01}"
+      FLEET_SIZE: "${FLEET_SIZE:-12}"
+    volumes:
+      - ./:/opt/project
+      - ./airflow/dags:/opt/airflow/dags
+      - fleet-airflow-logs:/opt/airflow/logs
+      - fleet-data:/data
+    entrypoint: ["/bin/bash", "-c"]
+    command: |
+      "
+      airflow db migrate &&
+      airflow users create --username admin --password admin \
+        --firstname Fleet --lastname Admin --role Admin --email admin@example.com || true
+      "
+    restart: "no"
+
+  airflow-scheduler:
+    <<: *airflow-image
+    container_name: fleet-airflow-scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    volumes:
+      - ./:/opt/project
+      - ./airflow/dags:/opt/airflow/dags
+      - fleet-airflow-logs:/opt/airflow/logs
+      - fleet-data:/data
+    command: ["scheduler"]
+    restart: unless-stopped
+
+  airflow-webserver:
+    <<: *airflow-image
+    container_name: fleet-airflow-webserver
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./:/opt/project
+      - ./airflow/dags:/opt/airflow/dags
+      - fleet-airflow-logs:/opt/airflow/logs
+      - fleet-data:/data
+    command: ["webserver"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 45s
+    restart: unless-stopped
+
+  # ----------------------------------------------------------------- monitoring
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: fleet-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./observability/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
+      - fleet-prometheus:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=6h
+      - --web.enable-lifecycle
+    restart: unless-stopped
+
+  # Short-lived batch runs cannot be scraped, so they push here instead.
+  pushgateway:
+    image: prom/pushgateway:v1.9.0
+    container_name: fleet-pushgateway
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    container_name: fleet-grafana
+    depends_on:
+      - prometheus
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"      # demo convenience: no login prompt
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - fleet-grafana:/var/lib/grafana
+    restart: unless-stopped
+
+volumes:
+  fleet-data:            # lake, landing files, checkpoints, rendered reports
+  fleet-postgres:
+  fleet-prometheus:
+  fleet-grafana:
+  fleet-airflow-logs:

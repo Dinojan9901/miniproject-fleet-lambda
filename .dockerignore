@@ -1,0 +1,13 @@
+# Keep the build context small -- it is transferred to the daemon on every build.
+.venv/
+venv/
+.git/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+data/
+report/
+docs/
+*.pdf
+.env
