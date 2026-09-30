@@ -52,7 +52,7 @@ The project is already running for the demo. Do not run a fresh reset. If it was
 
 **Say:**
 
-> "The project uses simulated vehicles so we can see how the pipeline works. Kafka receives their updates, and Spark processes the live stream. The dashboard uses those results to show the current fleet. A separate daily process combines the complete vehicle data with fuel and maintenance costs to calculate each vehicle profit or loss."
+> "The project uses simulated vehicles so we can see how the pipeline works. Simulated vehicle data flows through Kafka to Spark Structured Streaming, which updates the live fleet data and saves the full telemetry history. Each day, Airflow coordinates a Spark batch job that combines that history with fuel and maintenance costs to create daily results and a report. The API brings the live and daily results to the fleet dashboard. Prometheus and Grafana monitor the pipeline’s health."
 
 #### 1:25-2:35 - Follow the live fleet view
 
@@ -122,6 +122,7 @@ docker compose exec expense-source ls -la /data/landing/expenses
 > "First, it finds an expense file that is not processed yet. Second, it checks that the vehicle data for that day is saved. Third, it runs the Spark batch job. This job calculates the whole day again and joins it with the expenses."
 
 > "Fourth, it checks the results. If the numbers look wrong, the run fails and the day is not marked as done. Only after this check, the day is marked as finished. Here Green means the step passed."
+
 
 
 If needed, point to these tasks in order:
