@@ -7,6 +7,7 @@ psycopg2-binary==2.9.9        # serving store
 prometheus-client==0.21.0     # metrics exposition and Pushgateway
 fastapi==0.115.0              # serving API
 uvicorn[standard]==0.30.6     # ASGI server
+tzdata==2025.2                # timezone database; Windows has none built in
 
 # Tests only -- no broker, no Spark, no database required.
 pytest==8.3.3
