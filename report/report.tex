@@ -274,7 +274,7 @@ The API reads the live and daily data and makes it available to the dashboard. T
 which view is live and which view comes from the completed day. It also compares the two so users
 can see how much the fast estimate differs from the daily result.
 
-\imageplaceholder{dashboard.png}{The fleet dashboard showing current vehicle activity, daily results, and the comparison between the live and daily views.}{0.95}
+\imageplaceholder{dashboard.png}{The fleet dashboard showing current vehicle activity and live and daily views. This dashboard image is from a separate run, so its values differ from the 2026-09-29 results below.}{0.95}
 
 \imageplaceholder{report.png}{The daily vehicle report showing income, costs, profit or loss, distance, and flags for issues that need review.}{0.95}
 
@@ -309,9 +309,10 @@ order.
 
 \section{Results}
 
-During one verified run, the daily result for 17 August 2026 showed income of LKR 89,342.10 from
-283 completed trips. The live view showed LKR 54,177.15 across 24 time windows. The live estimate
-was LKR 35,164.95 lower, or 39.36 percent below the daily result.
+For simulated date 2026-09-29, the daily report showed income of LKR 88,058.30 from 282 completed
+trips. The live view showed LKR 52,095.79 across 24 time windows. The comparison result showed
+that the live estimate was LKR 35,962.51 lower, or 40.84 percent below the daily result. The daily
+report and comparison were generated from the same batch run on 30 September 2026.
 
 \begin{table}[htbp]\centering\small
 \caption{Example comparison for one simulated day.}
@@ -319,26 +320,21 @@ was LKR 35,164.95 lower, or 39.36 percent below the daily result.
 \toprule
 \textbf{View} & \textbf{Result} & \textbf{Meaning}\\
 \midrule
-Live earnings & LKR 54,177.15 & Estimated from incoming fare increases across 24 windows.\\
-Daily income & LKR 89,342.10 & Calculated from 283 completed trips in the full day.\\
-Difference & LKR -35,164.95 & The live estimate was lower than the daily result.\\
-Difference as share of daily income & 39.36\% & The size of the gap in this run.\\
+Live earnings & LKR 52,095.79 & Estimated from fare changes across 24 windows.\\
+Live trip count & 480 & Estimated across the live windows.\\
+Daily income & LKR 88,058.30 & Calculated from 282 completed trips in the full day.\\
+Difference & LKR -35,962.51 & The live estimate was lower than the daily result.\\
+Difference as share of daily income & 40.84\% & The gap as a share of daily income.\\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-The largest known reason is the trip starting charge. The vehicle source adds LKR 120 to the
-completed trip fare at the start of a trip. The live calculation adds fare increases during the
-trip, but does not include this starting charge. For 283 trips, these charges total LKR 33,960.
-After allowing for them, LKR 1,204.95 of the difference remains. This is about 1.35 percent of
-the daily income. The rest is not assigned to one cause. The two paths use different time groups
-and counting methods.
-
-The trip counts also differ. A trip can appear in more than one live time or zone group. The live
-count adds estimates from these groups. The daily job counts each completed trip once. This is why
-the daily trip count is the better number for a full-day report.
-
-These numbers are from one run. New results can change as the simulated clock moves forward.
+The comparison reports that the two values use different counting methods. The live view adds
+fare changes in time windows under a watermark, while the daily report adds the final fare for
+each completed trip in the full event history. The live trip count is an estimate across those
+windows. The daily trip count counts completed trips for the full day, so it is the better number
+for a daily report. These results describe one run and may change when the simulated clock moves
+forward.
 
 \section{Limits and Future Improvements}
 
