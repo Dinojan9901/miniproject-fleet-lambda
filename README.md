@@ -219,7 +219,7 @@ the lake, the database and the simulated calendar.
 
 ```
 miniproject-fleet-lambda/
-├── docker-compose.yml          14 services: the whole platform
+├── docker-compose.yml          15 services: the whole platform, including one-shot initializers
 ├── docker/
 │   ├── app/Dockerfile          simulators + Spark + API (Kafka jars baked in)
 │   └── airflow/Dockerfile      Airflow + JVM + PySpark
@@ -270,7 +270,11 @@ compressed into 5 real minutes** (288×, configurable via `SIM_DAY_SECONDS`):
 
 Everything downstream is expressed in *simulated* time — window size, watermark,
 idle-alert threshold, report dates — so every number keeps its real-world
-meaning. Only the wall-clock rate changes.
+meaning. The simulated calendar uses `SIM_TIMEZONE` (default `Asia/Colombo`),
+so simulated day zero begins at midnight Sri Lankan time. Service log and
+dashboard timestamps, the Airflow schedule/UI, and database timestamp display
+also use this timezone. Timestamps are still stored as absolute instants, so
+their timezone display does not change the underlying moment.
 
 All components must agree on where the calendar starts, so the first process to
 boot writes `/data/_sim_anchor.json` (created atomically with `O_EXCL`) and
@@ -403,6 +407,7 @@ environment variable or `.env` (copy `.env.example`).
 |---|---|---|
 | `SIM_DAY_SECONDS` | `300` | real seconds per simulated day (288× compression) |
 | `SIM_EPOCH_DATE` | `2026-08-01` | calendar date of simulated day 0 |
+| `SIM_TIMEZONE` | `Asia/Colombo` | timezone used for simulated dates and displayed project times |
 | `FLEET_SIZE` | `12` | vehicles in the simulated fleet |
 | `EVENT_INTERVAL_SECONDS` | `2.0` | real seconds between emission rounds |
 | `ANOMALY_RATE` | `0.04` | fraction of telemetry deliberately malformed |

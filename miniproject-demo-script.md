@@ -41,19 +41,13 @@ the first daily expense reconciliation needs a matching telemetry day and can
 take at least five real minutes on a fresh run. Record only after Airflow shows
 a successful `announce` task and `/api/reports` lists a date.
 
-For an existing stack created before the Compose init-command fix, recreate the
-one-shot initializers once:
+The `data-init` one-shot service prepares the shared folders and Airflow write
+permissions automatically. On a stack that was already running before this
+service was added, recreate the initializers once:
 
 ```powershell
-docker compose up -d --force-recreate kafka-init airflow-init
+docker compose up -d --force-recreate data-init kafka-init airflow-init
 docker compose up -d
-```
-
-If Airflow reports permission errors on the shared volume, repair the writable
-folders without deleting the data:
-
-```powershell
-docker compose exec --user root airflow-scheduler bash -c "mkdir -p /data/landing/_processed /data/reports && chown -R 50000:0 /data/landing/_processed /data/reports && chmod 775 /data/landing /data/landing/_processed /data/reports"
 ```
 
 ### Windows to prepare
@@ -72,7 +66,7 @@ Preload every tab. Grafana and Airflow are slow on first load.
 
 ### Requirements
 
-- Docker Desktop with **~8 GB RAM** allocated (14 services)
+- Docker Desktop with **~8 GB RAM** allocated (15 services, including one-shot initializers)
 - Free ports: 18000, 8088, 3000, 9090, 9091, 4040, 5432, 29092
 - Kafka and ZooKeeper use `confluentinc/cp-*:7.6.1`; Kafka is single-broker
 
@@ -302,7 +296,7 @@ docker compose start telemetry-producer
 2. **Another stack using ports.** This project needs its listed host ports,
    especially Kafka 29092 and dashboard 18000.
 3. **Cold browser tabs.** Grafana and Airflow take 20–40 seconds on first load.
-4. **Too little RAM.** 14 services want ~8 GB; below that, containers get killed
+4. **Too little RAM.** 15 services want ~8 GB; below that, containers get killed
    mid-demo.
 5. **Deleting persistent demo data.** `docker compose down -v` removes expense
    files, reports, database contents, and the simulated clock. Use `docker compose

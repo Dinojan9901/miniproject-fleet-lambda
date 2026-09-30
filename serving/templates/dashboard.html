@@ -335,7 +335,9 @@ function barChart(rows) {
 
 function shortTime(iso) {
   if (!iso) return "–";
-  return new Date(iso).toISOString().slice(11, 16) + "Z";
+    return new Intl.DateTimeFormat(undefined, {
+      timeZone: "Asia/Colombo", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+    }).format(new Date(iso));
 }
 
 async function refreshSpeed() {

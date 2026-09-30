@@ -24,8 +24,9 @@ import json
 import os
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 ANCHOR_FILENAME = "_sim_anchor.json"
 
@@ -72,6 +73,7 @@ class SimClock:
 
     @classmethod
     def shared(cls, data_dir: str | Path, day_seconds: int, epoch_date: str,
+               timezone_name: str = "UTC",
                wait_seconds: float = 30.0) -> "SimClock":
         """Read the shared anchor, creating it if this is the first process up.
 
@@ -82,7 +84,11 @@ class SimClock:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "real_anchor": time.time(),
-            "sim_epoch": f"{epoch_date}T00:00:00+00:00",
+            "sim_epoch": datetime.combine(
+                date.fromisoformat(epoch_date), datetime_time.min,
+                tzinfo=ZoneInfo(timezone_name),
+            ).isoformat(),
+            "timezone": timezone_name,
             "day_seconds": day_seconds,
         }
         try:
@@ -94,7 +100,9 @@ class SimClock:
 
         return cls(
             real_anchor=float(payload["real_anchor"]),
-            sim_epoch=datetime.fromisoformat(payload["sim_epoch"]).astimezone(timezone.utc),
+            # The saved anchor is authoritative so all containers share exactly
+            # the same simulated clock, even if their environment differs.
+            sim_epoch=datetime.fromisoformat(payload["sim_epoch"]),
             day_seconds=int(payload["day_seconds"]),
         )
 

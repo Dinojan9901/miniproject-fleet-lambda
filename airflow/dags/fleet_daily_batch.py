@@ -60,7 +60,7 @@ with DAG(
     dag_id="fleet_daily_batch",
     description="Daily fleet profitability reconciliation (Lambda batch layer)",
     default_args=DEFAULT_ARGS,
-    start_date=pendulum.datetime(2026, 1, 1, tz="UTC"),
+    start_date=pendulum.datetime(2026, 1, 1, tz=os.getenv("SIM_TIMEZONE", "Asia/Colombo")),
     schedule="*/5 * * * *",     # one simulated day
     catchup=False,              # yesterday's missed slots are not useful; the
                                 # file-marker scan already finds unprocessed days

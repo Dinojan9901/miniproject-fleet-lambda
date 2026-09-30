@@ -25,7 +25,8 @@ import sys
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from confluent_kafka import Producer
 from prometheus_client import Counter, Gauge, start_http_server
@@ -184,7 +185,7 @@ def build_event(state: VehicleState, sim_now_dt: datetime, sim_date: str) -> dic
         "fare": round(state.fare, 2),
         "fare_increment": state.fare_increment,
         "event_time": sim_now_dt.isoformat(timespec="milliseconds"),
-        "ingest_time": datetime.now(tz=timezone.utc).isoformat(timespec="milliseconds"),
+        "ingest_time": datetime.now(tz=ZoneInfo(SETTINGS.sim_timezone)).isoformat(timespec="milliseconds"),
         "sim_date": sim_date,
         "seq": state.seq,
     }
@@ -226,7 +227,10 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _stop)
 
     start_http_server(args.metrics_port)
-    clock = SimClock.shared(SETTINGS.data_dir, SETTINGS.sim_day_seconds, SETTINGS.sim_epoch_date)
+    clock = SimClock.shared(
+        SETTINGS.data_dir, SETTINGS.sim_day_seconds, SETTINGS.sim_epoch_date,
+        SETTINGS.sim_timezone,
+    )
     rng = random.Random(args.seed)
 
     fleet = build_fleet(args.fleet_size)

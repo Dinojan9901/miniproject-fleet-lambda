@@ -149,8 +149,21 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _stop)
 
     start_http_server(args.metrics_port)
-    clock = SimClock.shared(SETTINGS.data_dir, SETTINGS.sim_day_seconds, SETTINGS.sim_epoch_date)
+    clock = SimClock.shared(
+        SETTINGS.data_dir, SETTINGS.sim_day_seconds, SETTINGS.sim_epoch_date,
+        SETTINGS.sim_timezone,
+    )
     landing_dir = Path(SETTINGS.data_dir) / "landing" / "expenses"
+    processed_dir = Path(SETTINGS.data_dir) / "landing" / "_processed"
+    reports_dir = Path(SETTINGS.data_dir) / "reports"
+    landing_dir.mkdir(parents=True, exist_ok=True)
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    # Airflow runs as uid 50000, gid 0 in the shared Docker volume. The source
+    # runs as root, so grant its group write access to the two directories that
+    # Airflow must create marker files and rendered reports in.
+    os.chmod(processed_dir, 0o775)
+    os.chmod(reports_dir, 0o775)
     rng = random.Random(args.seed)
 
     log.info("batch_source_started", extra={

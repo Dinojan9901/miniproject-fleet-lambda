@@ -81,7 +81,7 @@ def build_spark(app_name: str) -> SparkSession:
         # 12 vehicles at a few events per second is a tiny stream; the default
         # 200 shuffle partitions would create 200 near-empty tasks per batch.
         .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.sql.session.timeZone", "UTC")
+        .config("spark.sql.session.timeZone", SETTINGS.sim_timezone)
         .config("spark.sql.streaming.metricsEnabled", "true")
         .getOrCreate()
     )

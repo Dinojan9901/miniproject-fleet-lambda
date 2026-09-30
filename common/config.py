@@ -42,6 +42,7 @@ class Settings:
     # --- Simulated clock --------------------------------------------------
     sim_day_seconds: int     # real seconds that make up one simulated day
     sim_epoch_date: str      # calendar date that simulated day 0 represents
+    sim_timezone: str        # timezone used for simulated time and local display
 
     # --- Simulation shape -------------------------------------------------
     fleet_size: int
@@ -95,6 +96,7 @@ class Settings:
             postgres_password=_s("POSTGRES_PASSWORD", "fleet"),
             sim_day_seconds=_i("SIM_DAY_SECONDS", 300),
             sim_epoch_date=_s("SIM_EPOCH_DATE", "2026-08-01"),
+            sim_timezone=_s("SIM_TIMEZONE", "Asia/Colombo"),
             fleet_size=_i("FLEET_SIZE", 12),
             event_interval_seconds=_f("EVENT_INTERVAL_SECONDS", 2.0),
             anomaly_rate=_f("ANOMALY_RATE", 0.04),

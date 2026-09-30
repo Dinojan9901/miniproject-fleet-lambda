@@ -87,7 +87,7 @@ This asks Airflow to run the DAG. It does not mean the run has already finished.
 
 `find_pending_day` → `wait_for_master_dataset` → `run_batch_layer` → `validate_output` → `mark_processed` → `announce`
 
-If a task turns red, open that task and read its **Logs** tab. A prior issue in this project was a file permission error on `/data/landing/_processed`; that stops the first task from creating its tracking folder. A task failure means the report may not exist yet.
+If a task turns red, open that task and read its **Logs** tab. Compose now runs a `data-init` service before Airflow to create `/data/landing/_processed` and `/data/reports` with the required write permissions. If those directories still show a permission error on an older running stack, recreate the initializer with `docker compose up -d --force-recreate data-init airflow-init`, then run `docker compose up -d` again. A task failure means the report may not exist yet.
 
 ### Stop the project safely
 
@@ -155,7 +155,7 @@ During one project run, the comparison for `2026-09-06` showed speed earnings of
 
 ## 6. What is a simulated clock?
 
-Waiting a real 24 hours for a daily file would make a classroom demo very slow. The project speeds up its pretend calendar: **about 5 real minutes equal one simulated day**. The containers share a saved clock anchor so they agree about the simulated date.
+Waiting a real 24 hours for a daily file would make a classroom demo very slow. The project speeds up its pretend calendar: **about 5 real minutes equal one simulated day**. The simulated calendar uses **Sri Lankan time (`Asia/Colombo`, UTC+05:30)**, so each simulated day starts at midnight in Sri Lanka. Service logs, Airflow's schedule and UI, dashboard timestamps, and database timestamp display also use Sri Lankan time. The containers share a saved clock anchor so they agree about the simulated date. The computers still measure the same real moments; timestamps are just shown with the Sri Lankan offset.
 
 For example, a log might say the real time is 3:30 PM while `sim_now` says it is 9:00 AM on a simulated date. These are two different clocks: one is your computer’s clock, and the other belongs to the pretend fleet world.
 

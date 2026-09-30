@@ -8,11 +8,15 @@
 #   ops         prometheus, pushgateway, grafana
 #
 # Ports on the host:
-#   8000 dashboard + API      8080 Kafka UI is NOT used here (see Chapter 3)
-#   8088 Airflow              3000 Grafana        9090 Prometheus
-#   9091 Pushgateway          4040 Spark UI       29092 Kafka     5432 Postgres
+#   18000 dashboard + API     8088 Airflow              3000 Grafana
+#   9090 Prometheus           9091 Pushgateway    4040 Spark UI
+#   29092 Kafka                5432 Postgres
 #
 # Needs roughly 8 GB of RAM available to Docker.
+
+# Use a new Compose project namespace for the fresh Sri Lankan-time run. This
+# gives it empty named volumes while preserving the previous run's data.
+name: fleet-lambda-colombo
 
 # Exactly one service per image declares `build:`; the rest reference the built
 # tag. Declaring the same build on several services makes Compose schedule
@@ -24,6 +28,7 @@ x-airflow-image: &airflow-image
   image: fleet-lambda/airflow:1.0
 
 x-app-env: &app-env
+  TZ: "${SIM_TIMEZONE:-Asia/Colombo}"
   BOOTSTRAP_SERVERS: kafka:9092
   POSTGRES_HOST: postgres
   POSTGRES_DB: fleet
@@ -33,6 +38,7 @@ x-app-env: &app-env
   PUSHGATEWAY_URL: http://pushgateway:9091
   SIM_DAY_SECONDS: "${SIM_DAY_SECONDS:-300}"
   SIM_EPOCH_DATE: "${SIM_EPOCH_DATE:-2026-08-01}"
+  SIM_TIMEZONE: "${SIM_TIMEZONE:-Asia/Colombo}"
   FLEET_SIZE: "${FLEET_SIZE:-12}"
   ANOMALY_RATE: "${ANOMALY_RATE:-0.04}"
   EVENT_INTERVAL_SECONDS: "${EVENT_INTERVAL_SECONDS:-2.0}"
@@ -43,11 +49,29 @@ x-app-env: &app-env
 
 services:
 
+  # Prepare shared-volume paths and group permissions before any service uses
+  # them. Airflow runs as uid 50000, gid 0; setgid directories preserve group 0.
+  data-init:
+    image: postgres:15-alpine
+    container_name: fleet-data-init
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -eu
+        mkdir -p /data/landing/expenses /data/landing/_processed /data/lake/telemetry /data/reports
+        chmod 2775 /data/landing/_processed /data/reports
+        echo 'shared data directories ready (Airflow group-write enabled)'
+    volumes:
+      - fleet-data:/data
+    restart: "no"
+
   # ------------------------------------------------------------------ ingestion
   zookeeper:
     image: confluentinc/cp-zookeeper:7.6.1
     container_name: fleet-zookeeper
     environment:
+      TZ: "${SIM_TIMEZONE:-Asia/Colombo}"
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
     healthcheck:
@@ -65,6 +89,7 @@ services:
     ports:
       - "29092:29092"
     environment:
+      TZ: "${SIM_TIMEZONE:-Asia/Colombo}"
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
@@ -112,6 +137,8 @@ services:
       dockerfile: docker/app/Dockerfile
     container_name: fleet-telemetry-producer
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
     environment: *app-env
@@ -125,6 +152,8 @@ services:
     <<: *app-image
     container_name: fleet-expense-source
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
     environment: *app-env
@@ -139,11 +168,13 @@ services:
     image: postgres:15-alpine
     container_name: fleet-postgres
     environment:
+      TZ: "${SIM_TIMEZONE:-Asia/Colombo}"
       POSTGRES_DB: fleet
       POSTGRES_USER: fleet
       POSTGRES_PASSWORD: fleet
     ports:
       - "5432:5432"
+    command: ["postgres", "-c", "timezone=${SIM_TIMEZONE:-Asia/Colombo}"]
     volumes:
       - fleet-postgres:/var/lib/postgresql/data
       # Runs alphabetically on first start: databases, then the pipeline schema.
@@ -159,6 +190,8 @@ services:
     <<: *app-image
     container_name: fleet-speed-layer
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       kafka-init:
         condition: service_completed_successfully
       postgres:
@@ -182,6 +215,8 @@ services:
     <<: *app-image
     container_name: fleet-api
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     environment: *app-env
@@ -208,9 +243,14 @@ services:
       dockerfile: docker/airflow/Dockerfile
     container_name: fleet-airflow-init
     depends_on:
+      data-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     environment: &airflow-env
+      TZ: "${SIM_TIMEZONE:-Asia/Colombo}"
+      AIRFLOW__CORE__DEFAULT_TIMEZONE: "${SIM_TIMEZONE:-Asia/Colombo}"
+      AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: "${SIM_TIMEZONE:-Asia/Colombo}"
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://fleet:fleet@postgres:5432/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -231,6 +271,7 @@ services:
       PUSHGATEWAY_URL: http://pushgateway:9091
       SIM_DAY_SECONDS: "${SIM_DAY_SECONDS:-300}"
       SIM_EPOCH_DATE: "${SIM_EPOCH_DATE:-2026-08-01}"
+      SIM_TIMEZONE: "${SIM_TIMEZONE:-Asia/Colombo}"
       FLEET_SIZE: "${FLEET_SIZE:-12}"
     volumes:
       - ./:/opt/project
@@ -289,6 +330,8 @@ services:
     container_name: fleet-prometheus
     ports:
       - "9090:9090"
+    environment:
+      TZ: "${SIM_TIMEZONE:-Asia/Colombo}"
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./observability/alert_rules.yml:/etc/prometheus/alert_rules.yml:ro
@@ -306,6 +349,8 @@ services:
     container_name: fleet-pushgateway
     ports:
       - "9091:9091"
+    environment:
+      TZ: "${SIM_TIMEZONE:-Asia/Colombo}"
     restart: unless-stopped
 
   grafana:
@@ -316,6 +361,7 @@ services:
     ports:
       - "3000:3000"
     environment:
+      TZ: "${SIM_TIMEZONE:-Asia/Colombo}"
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"

@@ -43,6 +43,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from prometheus_client import CollectorRegistry, Counter, Gauge, push_to_gateway
 from pyspark.sql import DataFrame, SparkSession
@@ -83,7 +84,7 @@ def build_spark(app_name: str) -> SparkSession:
     return (
         SparkSession.builder.appName(app_name)
         .config("spark.sql.shuffle.partitions", "4")
-        .config("spark.sql.session.timeZone", "UTC")
+        .config("spark.sql.session.timeZone", SETTINGS.sim_timezone)
         .getOrCreate()
     )
 
@@ -382,7 +383,7 @@ def run(sim_date: str, run_id: str) -> dict:
             raise BatchFailure(f"reconciliation produced no vehicles for {sim_date}")
 
         summary = summarise(rows)
-        generated_at = datetime.now(tz=timezone.utc).isoformat(timespec="seconds")
+        generated_at = datetime.now(tz=ZoneInfo(SETTINGS.sim_timezone)).isoformat(timespec="seconds")
 
         persist(rows, summary, sim_date, run_id, conn)
         csv_path = write_csv(rows, reports_dir / f"daily_profitability_{sim_date}.csv")

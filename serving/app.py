@@ -150,6 +150,13 @@ def fleet_live() -> dict:
         FROM rt_vehicle_state
     """) or {}
 
+    # psycopg returns PostgreSQL NUMERIC/EXTRACT values as Decimal. Keep the
+    # JSON API numeric (rather than serializing them as strings), so clients can
+    # safely compare or format these measurements.
+    for field in ("avg_speed_kmh", "view_age_seconds"):
+        if totals.get(field) is not None:
+            totals[field] = float(totals[field])
+
     window = fetch("""
         SELECT zone, events, active_vehicles, idle_ratio, trips, earnings, avg_speed_kmh,
                window_start, window_end

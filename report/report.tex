@@ -48,9 +48,8 @@
 \newcommand{\screenshot}[3]{%
   \begin{figure}[htbp]\centering
   \IfFileExists{figures/#1}{\includegraphics[width=#3\textwidth]{figures/#1}}{%
-    \fbox{\parbox[c][3.2cm][c]{#3\textwidth}{\centering\small\itshape
-    Screenshot placeholder --- save as \code{report/figures/#1}\\[2pt]
-    (#2)}}}
+    \fbox{\parbox[c][2.0cm][c]{#3\textwidth}{\centering\small\itshape
+    Capture and save as \code{report/figures/#1}.}}}
   \caption{#2}\label{fig:#1}
   \end{figure}}
 
@@ -66,8 +65,8 @@ ingests continuous vehicle telemetry from Kafka and a once-per-day vehicle expen
 both, and answers a two-part business question: \emph{what is fleet utilisation and earnings by zone
 right now}, and \emph{which vehicles became unprofitable once yesterday's fuel and maintenance costs
 are applied}. The two halves have different latency and correctness contracts, which is the reason a
-\textbf{Lambda} architecture was selected over Kappa. The system runs as fourteen containers under
-Docker Compose; simulated time is compressed so that one simulated day elapses every five real
+\textbf{Lambda} architecture was selected over Kappa. The system runs as fifteen Compose services,
+including one-shot initialization jobs; simulated time is compressed so that one simulated day elapses every five real
 minutes.
 \end{minipage}
 \end{center}
@@ -361,7 +360,7 @@ popularity, and each names what was rejected.
 \midrule
 \endhead
 Ingestion &
-Apache Kafka 7.3.2, topic \code{fleet.telemetry}, 3 partitions, keyed by \code{vehicle\_id} &
+Apache Kafka 7.6.1, topic \code{fleet.telemetry}, 3 partitions, keyed by \code{vehicle\_id} &
 Three properties are needed and Kafka has all three: \emph{partition-keyed ordering}, so one
 vehicle's events stay ordered while three consumers work in parallel --- the ``latest state per
 vehicle'' logic depends on it; \emph{retention}, so the speed layer can be restarted and resume
@@ -417,9 +416,10 @@ the batch job lives $\sim$30 seconds and can never be scraped --- it pushes, gro
 control as code. \\
 \addlinespace
 Packaging &
-Docker Compose, 14 services &
-Reproducibility is explicitly assessed. One command builds and starts the entire platform;
-\code{docker compose down -v} returns it to a clean state. \\
+Docker Compose, 15 services &
+Reproducibility is explicitly assessed. Compose builds and starts the platform; named volumes
+preserve simulation data across ordinary stops. \code{docker compose down -v} deletes those volumes
+and is only for an intentional full reset. \\
 \bottomrule
 \end{longtable}
 
@@ -578,7 +578,7 @@ alongside the last authoritative day and a seven-day history.
 \code{/api/lambda/compare/\{sim\_date\}} exists purely to quantify the residual gap between the two
 views --- it is the endpoint that turns the architectural argument of \S2 into a measured number.
 
-\screenshot{dashboard.png}{The live dashboard at \code{http://localhost:8000}: speed-layer tiles and
+\screenshot{dashboard.png}{The live dashboard at \code{http://localhost:18000}: speed-layer tiles and
 per-window earnings above, the authoritative daily reconciliation below, and the measured speed/batch
 difference at bottom right.}{0.95}
 
@@ -626,7 +626,7 @@ Every long-running component exposes \code{/metrics}; the batch job pushes to a 
 a 30-second process can never be scraped. What is measured, and why:
 
 \begin{center}\small
-\begin{tabularx}{\textwidth}{@{}llX@{}}
+\begin{tabularx}{\textwidth}{@{}p{1.2cm}p{7.1cm}X@{}}
 \toprule
 \textbf{Stage} & \textbf{Metric} & \textbf{Why it exists} \\
 \midrule
@@ -677,26 +677,35 @@ latency, and the age of each Lambda view.}{0.95}
 \label{sec:results}
 
 \subsection{Verification}
-% RESULTS-PLACEHOLDER: replace the figures in this subsection with the values printed by
-% `python scripts/smoke_check.py` and `/api/lambda/compare/<date>` from your own run.
-The platform was run end to end. \code{scripts/smoke\_check.py} verifies each layer in turn ---
-API health, speed-layer state writes, windowed aggregation, threshold alerts, batch reconciliation,
-the speed/batch comparison, and Prometheus targets and rules --- reporting each as
-\code{PASS}/\code{PENDING}/\code{FAIL}. Components that legitimately need more simulated time report
-\code{PENDING} rather than failing, so the check is meaningful from the first seconds of a run.
+The platform was run end to end on 2026-09-30. The current smoke check reported all seven checks
+as \code{PASS}: API/database health, live speed-state freshness, window aggregation, threshold
+alerts, batch reconciliation, speed/batch comparison, and monitoring (6/6 targets and 15 rules).
+The reconciled day at verification time was 2026-08-17. \code{scripts/smoke\_check.py} also reports
+\code{PENDING} for checks that legitimately need more simulated time rather than treating them
+as failures.
 
 \subsection{Observed speed/batch divergence}
-The measured gap between the speed layer's windowed earnings and the batch layer's authoritative
-revenue for the same simulated day is reported by \code{/api/lambda/compare/<date>}. The gap is
-expected and has three identifiable sources, in decreasing order of size: events arriving after the
-watermark are excluded from the windowed sum but present in the master dataset; fare increments are
-summed continuously whereas batch revenue counts only \emph{completed} trips, so a trip in flight at
-midnight contributes to one and not the other; and \code{approx\_count\_distinct} introduces a small
-error in the trip count. \emph{That this number is small but non-zero is the empirical justification
-for the architecture} --- it is precisely the error the batch layer exists to correct.
+For simulated date \code{2026-08-17}, the compare endpoint returned speed-layer earnings of
+\textbf{LKR 54,177.15} over 24 windows and batch-layer revenue of \textbf{LKR 89,342.10} from
+283 completed trips. The speed view was lower by \textbf{LKR 35,164.95}, or \textbf{39.36\%}
+of batch revenue. The batch result was computed at 2026-09-30 16:45:18 Asia/Colombo. These are
+captured run values; a new run will produce different results.
+
+The largest identified cause is a difference in fare definitions. The producer sets a LKR 120
+flagfall directly on the cumulative fare when a trip starts, but the speed layer sums only
+\code{fare\_increment}. That flagfall is therefore present in batch's final fare per completed
+trip but absent from the stream's increment sum. For 283 batch trips, the missing flagfall totals
+\textbf{LKR 33,960.00}. Subtracting it leaves a residual of \textbf{LKR 1,204.95}, about
+\textbf{1.35\%} of batch revenue. This residual is measured but is not attributed solely to
+watermarking or HyperLogLog; event/window boundaries and the layers' differing aggregation rules
+can also contribute. The speed trip count (492) is also not directly comparable to 283: the speed
+view adds approximate distinct counts across separate window/zone groups, so a trip crossing a
+group boundary can be counted more than once. The batch count is the authoritative completed-trip
+count for this daily report.
 
 \subsection{Testing}
-The repository contains \term{76 automated tests} that require no broker, no Spark and no database,
+The repository contains \term{76 automated tests}, all of which passed in 3.23 seconds in the
+built application container. They require no broker, no Spark and no database,
 covering: the simulated clock's compression, day boundaries and shared-anchor race; zone assignment
 swept across the whole operating area; haversine against known distances; every validation rule
 individually and in combination; the profitability arithmetic and its threshold behaviour at the
@@ -785,10 +794,10 @@ replication factor 1. Monetary values are nominal LKR. \emph{Submission type:} i
 
 \vspace{0.4cm}
 \noindent\small\textbf{Repository contents.} \code{README.md} (architecture summary, setup, the
-five-minute demo script, troubleshooting), \code{docker-compose.yml} (14 services),
+five-minute demo script, troubleshooting), \code{docker-compose.yml} (15 services),
 \code{common/} (shared modules), \code{simulators/}, \code{speed\_layer/}, \code{batch\_layer/},
 \code{serving/}, \code{airflow/dags/}, \code{sql/}, \code{observability/} (Prometheus, 15 alert rules,
 a 15-panel Grafana dashboard), \code{scripts/} (smoke check, evidence export),
-\code{tests/} (76 tests).
+\code{tests/} (automated unit tests).
 
 \end{document}

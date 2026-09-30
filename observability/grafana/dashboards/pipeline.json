@@ -3,7 +3,7 @@
   "title": "Fleet pipeline health",
   "description": "Operational view of the Lambda pipeline: ingestion, speed layer, batch layer, serving. The business dashboard lives at http://localhost:8000/ -- this one is about whether the pipeline itself is working.",
   "tags": ["fleet", "lambda", "pipeline"],
-  "timezone": "utc",
+  "timezone": "Asia/Colombo",
   "schemaVersion": 39,
   "version": 1,
   "editable": true,
