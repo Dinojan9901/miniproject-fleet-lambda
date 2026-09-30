@@ -35,47 +35,43 @@ The project is already running for the demo. Do not run a fresh reset. If it was
 
 ## 2. Speaking plan
 
-### Presenter A — 0:00 to 4:30
+### Presenter A - 0:00 to 4:30
 
-#### 0:00–0:35 — Readiness check
+#### 0:00-0:35 - Project introduction and readiness
 
-**Show:** Terminal 1 with the three checks from Section 1.
+**Show:** Terminal 1 with the checks from Section 1. Point out that the containers are up, the API reports healthy with its database reachable, and at least one daily report is available.
 
 **Say:**
 
-> “This project is a fleet operations data pipeline for a ride-hailing service. It brings together simulated vehicle updates and daily fuel and maintenance costs, processes live events with Kafka and Spark, stores results for the API and dashboard, and uses Airflow to create verified daily reports. Its purpose is to help operators see what is happening across the fleet now, then understand vehicle revenue, costs, and profit for the full day. In this demo, we will follow both data paths and see how their results are monitored and compared.”
+> "We are demonstrating a data pipeline for a ride-hailing fleet. It helps operators follow vehicle activity as it happens and review each vehicle earnings and costs at the end of the day. The services are running, the API can reach its database, and a daily report is ready. First, I will show how the live vehicle data flows through the system. Then Presenter B will show how the daily report is produced."
 
-#### 0:35–1:25 — What the project does
+#### 0:35-1:25 - Project purpose and system overview
 
 **Show:** Fleet dashboard at `http://localhost:18000`.
 
 **Say:**
 
-> “This project helps a ride-hailing company understand its fleet. It receives live updates from vehicles and daily cost files. It answers two questions: what is happening right now, and which vehicles made or lost money after the daily costs are counted?”
+> "The project uses simulated vehicles so we can see how the pipeline works. Kafka receives their updates, and Spark processes the live stream. The dashboard uses those results to show the current fleet. A separate daily process combines the complete vehicle data with fuel and maintenance costs to calculate each vehicle profit or loss."
 
-> “We use two paths because the questions need different answers. The live path is fast and can be approximate. The daily path takes longer, but checks the full day and is the authoritative result.”
+#### 1:25-2:35 - Follow the live fleet view
 
-#### 1:25–2:35 — Live fleet view
-
-**Show:** On the dashboard, point to vehicle counts and statuses, the recent zone/window figures, alerts, and the batch section if visible.
+**Show:** On the dashboard, point to vehicle counts and statuses, recent zone and time-window figures, and alerts.
 
 **Say:**
 
-> “The vehicles are simulated. The producer sends their status, location, speed and fare to Kafka. Spark reads the stream, checks each event, and updates the live database view. This dashboard shows that view: vehicle activity, earnings by zone, and alerts such as a vehicle staying idle too long.”
+> "Here we can see which vehicles are active or idle, where they are operating, and how activity and earnings change over recent time windows. These figures update as new vehicle messages arrive, so they give operators a current view of the fleet."
 
-> “Some bad events are expected in this demo. The system sends those to a quarantine topic so they can be inspected instead of using them as good data.”
+> "Spark also checks incoming events. Invalid messages are sent to a quarantine topic for inspection, and rules can raise alerts, for example when a vehicle stays idle too long."
 
-#### 2:35–3:30 — Spark processing
+#### 2:35-3:30 - Show Spark processing the stream
 
-**Show:** Spark UI at `http://localhost:4040`. Point to **Structured Streaming** or recent completed jobs/micro-batches.
+**Show:** Spark UI at `http://localhost:4040`. Point to **Structured Streaming** or recent completed jobs and micro-batches.
 
 **Say:**
 
-> “This is the Spark UI for the live processing job. A micro-batch is a small group of Kafka messages that Spark processes together. The completed work here matches the speed-layer activity we saw in the dashboard.”
+> "This is the Spark job behind the live view. It reads vehicle messages from Kafka and processes them in small groups called micro-batches. The job updates the vehicle state and recent summaries, while handling invalid events and alerts."
 
-> “The job writes clean vehicle state and window summaries. It also records invalid events separately and raises alerts when a rule is met.”
-
-#### 3:30–4:30 — Stream evidence and handoff
+#### 3:30-4:30 - Confirm the stream and hand off
 
 **Show:** Terminal 1. Run:
 
@@ -86,10 +82,9 @@ docker compose exec kafka kafka-topics --bootstrap-server kafka:9092 --list
 
 **Say:**
 
-> “The producer log shows the simulated events and occasional intentional anomalies. Kafka has separate topics for normal telemetry, quarantined telemetry and alerts. The live path keeps updating while the daily path waits for its files and full-day data.”
+> "The producer log shows the simulated vehicle messages and occasional test anomalies. Kafka has separate topics for normal telemetry, quarantined events and alerts. This confirms the live path we just saw."
 
-> “I’ll hand over to Presenter B to show how the daily file is matched with the full telemetry data, checked by Airflow, and turned into a report.”
-
+> "I will hand over to Presenter B to follow the daily path: Airflow waits for the full-day data and expense file, runs and checks the batch job, and makes the daily report."
 ### Presenter B — 4:30 to 9:00
 
 #### 4:30–5:25 — Daily expense files and simulated time
