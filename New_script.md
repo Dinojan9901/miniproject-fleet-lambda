@@ -44,7 +44,7 @@ The project is already running for the demo. Do not run a fresh reset. If it was
 
 **Say:**
 
-> "We are demonstrating a data pipeline for a ride-hailing fleet. It helps operators follow vehicle activity as it happens and review each vehicle earnings and costs at the end of the day. The services are running, the API can reach its database, and a daily report is ready. First, I will show how the live vehicle data flows through the system. Then Presenter B will show how the daily report is produced."
+> "We are demonstrating a data pipeline for a ride-hailing fleet. It helps operators follow vehicle activity as it happens and review each vehicle earnings and costs at the end of the day. The services are running, the API can reach its database, and create the daily report. First, I will show how the live vehicle data flows through the system. Then Dinojan will show how the daily report is produced."
 
 #### 0:35-1:25 - Project purpose and system overview
 
@@ -85,7 +85,7 @@ docker compose exec kafka kafka-topics --bootstrap-server kafka:9092 --list
 
 > "The producer log shows the simulated vehicle messages and occasional test anomalies. Kafka has separate topics for normal telemetry, quarantined events and alerts. This confirms the live path we just saw."
 
-> "I will hand over to Presenter B to follow the daily path: Airflow waits for the full-day data and expense file, runs and checks the batch job, and makes the daily report."
+> "I will hand over to Dinojan to follow the daily path: Airflow waits for the full-day data and expense file, runs and checks the batch job, and makes the daily report."
 ### Presenter B - 4:30 to 9:00
 
 **Before recording, Presenter B should:**
@@ -121,9 +121,8 @@ docker compose exec expense-source ls -la /data/landing/expenses
 
 > "First, it finds an expense file that is not processed yet. Second, it checks that the vehicle data for that day is saved. Third, it runs the Spark batch job. This job calculates the whole day again and joins it with the expenses."
 
-> "Fourth, it checks the results. If the numbers look wrong, the run fails and the day is not marked as done. Only after this check, the day is marked as finished."
+> "Fourth, it checks the results. If the numbers look wrong, the run fails and the day is not marked as done. Only after this check, the day is marked as finished. Here Green means the step passed."
 
-> "Green means the step passed. Pink means skipped. Skipped is normal. It means there was no new file at that time."
 
 If needed, point to these tasks in order:
 
