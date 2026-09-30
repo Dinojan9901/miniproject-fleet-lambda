@@ -43,7 +43,7 @@ The project is already running for the demo. Do not run a fresh reset. If it was
 
 **Say:**
 
-> “The project is already running. I checked that the containers are up, the API can reach its database, and the system has a completed daily report. We will now follow the data through the live and daily parts of the system.”
+> “This project is a fleet operations data pipeline for a ride-hailing service. It brings together simulated vehicle updates and daily fuel and maintenance costs, processes live events with Kafka and Spark, stores results for the API and dashboard, and uses Airflow to create verified daily reports. Its purpose is to help operators see what is happening across the fleet now, then understand vehicle revenue, costs, and profit for the full day. In this demo, we will follow both data paths and see how their results are monitored and compared.”
 
 #### 0:35–1:25 — What the project does
 
