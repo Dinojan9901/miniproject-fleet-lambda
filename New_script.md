@@ -13,6 +13,7 @@ Open these browser tabs before the demo:
 | `http://localhost:4040` | Spark application UI for the speed layer |
 | `http://localhost:8088` | Airflow, DAG `fleet_daily_batch` |
 | `http://localhost:3000` | Grafana dashboard, **Fleet pipeline health** |
+| `http://localhost:9090/alerts` | Prometheus alert rules (Presenter B) |
 | `http://localhost:18000/api/reports` | Available daily report dates |
 
 Airflow login, if it asks: `admin` / `admin`.
@@ -85,9 +86,15 @@ docker compose exec kafka kafka-topics --bootstrap-server kafka:9092 --list
 > "The producer log shows the simulated vehicle messages and occasional test anomalies. Kafka has separate topics for normal telemetry, quarantined events and alerts. This confirms the live path we just saw."
 
 > "I will hand over to Presenter B to follow the daily path: Airflow waits for the full-day data and expense file, runs and checks the batch job, and makes the daily report."
-### Presenter B — 4:30 to 9:00
+### Presenter B - 4:30 to 9:00
 
-#### 4:30–5:25 — Daily expense files and simulated time
+**Before recording, Presenter B should:**
+
+- Open `http://localhost:18000/api/reports` and pick one date from the list. Use this same date for the report and the comparison.
+- In Airflow, find one green (successful) run of `fleet_daily_batch` and keep it open.
+- Open `http://localhost:9090/alerts` in a tab.
+
+#### 4:30-5:15 - Daily expense files and simulated time
 
 **Show:** Terminal 1. Run:
 
@@ -98,58 +105,76 @@ docker compose exec expense-source ls -la /data/landing/expenses
 
 **Say:**
 
-> “This service creates one expense CSV for each simulated day. It includes fuel and maintenance costs. These files are saved in the shared data volume so the batch job can read them.”
+> "Thank you. Now I will show the daily part. This service makes one expense file for each simulated day. The file has the fuel cost and the maintenance cost of each vehicle."
 
-> “The simulated calendar is set to Sri Lankan time. A simulated day takes about five real minutes, so we can demonstrate a daily process without waiting a full day.”
+> "Look at these log lines. Every service logs structured JSON. This makes the logs easy to search."
 
-#### 5:25–6:45 — Airflow daily batch
+> "Our time is compressed. One simulated day takes five real minutes. The calendar uses Sri Lankan time. So we can show a daily job without waiting a full day."
 
-**Show:** Airflow at `http://localhost:8088`. Open `fleet_daily_batch`, then select a successful recent run. Show the task graph/grid and the green task states.
+#### 5:15-6:30 - Airflow daily batch
+
+**Show:** Airflow at `http://localhost:8088`. Open `fleet_daily_batch`, then select the green run. Show the task graph or grid.
 
 **Say:**
 
-> “Airflow coordinates the daily work. First, it looks for an expense file that has not been processed. Then it waits until Spark has written that date’s full telemetry data. The batch job calculates the day again from the full data and joins it to the expenses.”
+> "Airflow runs the daily job. It does these steps in order."
 
-> “Airflow validates the output before marking the date as processed. The final announce step records that the run completed. A green run means every required step succeeded.”
+> "First, it finds an expense file that is not processed yet. Second, it checks that the vehicle data for that day is saved. Third, it runs the Spark batch job. This job calculates the whole day again and joins it with the expenses."
+
+> "Fourth, it checks the results. If the numbers look wrong, the run fails and the day is not marked as done. Only after this check, the day is marked as finished."
+
+> "Green means the step passed. Pink means skipped. Skipped is normal. It means there was no new file at that time."
 
 If needed, point to these tasks in order:
 
 ```text
-find_pending_day → wait_for_master_dataset → run_batch_layer
-→ validate_output → mark_processed → announce
+find_pending_day -> wait_for_master_dataset -> run_batch_layer
+-> validate_output -> mark_processed -> announce
 ```
 
-#### 6:45–7:45 — Daily report
+#### 6:30-7:25 - Daily report
 
-**Show:** First show `http://localhost:18000/api/reports`. Choose a date in its response, then open:
+**Show:** First show `http://localhost:18000/api/reports`. Then open the report for the date you picked:
 
 ```text
 http://localhost:18000/api/reports/daily/<date>/html
 ```
 
-Replace `<date>` with a date returned by `/api/reports`, for example `2026-08-17` if it is listed.
+Replace `<date>` with the date you picked from `/api/reports`.
 
 **Say:**
 
-> “This is the saved daily report for a completed simulated date. It shows each vehicle’s revenue, expenses, profit, distance and flags. The batch result is authoritative for this daily reconciliation because it uses the complete telemetry data and the expense file.”
+> "This is the daily report for one simulated day. Each row is one vehicle. We can see its revenue, its cost, its profit and its distance."
 
-#### 7:45–8:35 — Compare the two views
+> "The report also gives warnings. A vehicle is flagged when its profit is too low. It is also flagged when the billed distance does not match the GPS distance."
 
-**Show:** Open `http://localhost:18000/api/lambda/compare/<date>` using the same date. Point to `speed_view`, `batch_view` and `difference`.
+> "This report is the final, correct answer for the day, because it uses the full day's data and the expense file."
 
-**Say:**
+#### 7:25-8:15 - Compare the two views
 
-> “This comparison puts the fast live estimate beside the daily result. They can differ because the live layer sums fare increments, while the batch layer uses final fares for completed trips. In this project, the trip-start flagfall is included in the final fare but is not emitted as a fare increment, so it is one measured reason the live earnings are lower.”
-
-> “The live trip count can also count the same trip in more than one window or zone group. The batch trip count is the completed-trip count for that date.”
-
-#### 8:35–9:00 — Monitoring and close
-
-**Show:** Grafana at `http://localhost:3000`, dashboard **Fleet pipeline health**. Point to event rate/freshness, quarantine, batch and API panels.
+**Show:** Open `http://localhost:18000/api/lambda/compare/<date>` with the same date. Point to `speed_view`, `batch_view` and `difference`.
 
 **Say:**
 
-> “Grafana helps us see whether the data is arriving, whether Spark is processing it, and whether the batch and API are healthy. Together, Kafka, Spark, Airflow, the database, the API and monitoring make the complete pipeline visible. Thank you.”
+> "This is a Lambda architecture. It has two layers. The speed layer gives fast answers that are close, but not exact. The batch layer gives the correct answer later. This page shows both side by side."
+
+> "The two numbers are different, and we know why. Every trip starts with a fixed charge of 120 rupees. The batch layer counts it, because it uses the final fare. The speed layer adds up only the fare increases, so it misses this starting charge. That is the main reason the speed number is lower."
+
+> "The trip counts are also different. The speed layer can count one trip more than once, when the trip crosses two time windows or two zones. The batch layer counts each finished trip only once."
+
+#### 8:15-9:00 - Monitoring and close
+
+**Show:** First the Prometheus alert rules at `http://localhost:9090/alerts` (about 15 seconds). Then Grafana at `http://localhost:3000`, dashboard **Fleet pipeline health**.
+
+**Say (on the Prometheus page):**
+
+> "Last, monitoring. Prometheus has fifteen alert rules. Most of them check how old the data is, not how many errors there are. This is because a stopped pipeline gives no errors. The numbers just stop changing."
+
+**Say (on the Grafana page):**
+
+> "Grafana shows the health of the pipeline. We can see the data coming in, Spark processing it, the daily batch, and the API."
+
+> "So we showed the full pipeline: Kafka, Spark, Airflow, the database, the API and monitoring. Thank you."
 
 ## If a page looks empty during the demo
 
