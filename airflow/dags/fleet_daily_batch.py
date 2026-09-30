@@ -80,13 +80,26 @@ with DAG(
             path for path in LANDING_DIR.glob("expenses_*.csv")
             if not (PROCESSED_DIR / f"{path.stem}.done").exists()
         )
-        if not pending:
-            # Nothing to do is a normal outcome on most 5-minute ticks.
-            raise AirflowSkipException("no unprocessed expense files")
+        # Historical expense files can exist for dates whose telemetry was
+        # never written (for example, while the stream was unavailable during
+        # startup). Do not let the oldest such file block reconciliation for
+        # later dates that do have a master dataset. Keep unmatched CSVs in
+        # landing so they remain visible and can be handled separately.
+        for expense_path in pending:
+            sim_date = expense_path.stem.replace("expenses_", "")
+            partition = LAKE_DIR / f"sim_date={sim_date}"
+            if partition.exists() and any(partition.glob("*.parquet")):
+                print(
+                    f"selected sim_date={sim_date} from {expense_path} "
+                    f"({len(pending)} pending expense files; master dataset ready)"
+                )
+                return sim_date
 
-        sim_date = pending[0].stem.replace("expenses_", "")
-        print(f"selected sim_date={sim_date} from {pending[0]} ({len(pending)} pending)")
-        return sim_date
+        # Nothing to do is a normal outcome when no matching dataset is ready.
+        raise AirflowSkipException(
+            f"no unprocessed expense file has a matching master dataset "
+            f"({len(pending)} pending expense files)"
+        )
 
     def _master_dataset_ready(sim_date: str) -> bool:
         partition = LAKE_DIR / f"sim_date={sim_date}"

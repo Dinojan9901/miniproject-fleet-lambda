@@ -15,7 +15,7 @@ Components that legitimately need more simulated time are reported as PENDING
 rather than failures.
 
     python scripts/smoke_check.py
-    python scripts/smoke_check.py --api http://localhost:8000
+    python scripts/smoke_check.py --api http://localhost:18000
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ def check(label: str, fn) -> tuple[str, str, str]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Smoke-check the fleet pipeline")
-    parser.add_argument("--api", default="http://localhost:8000")
+    parser.add_argument("--api", default="http://localhost:18000")
     parser.add_argument("--prometheus", default="http://localhost:9090")
     args = parser.parse_args(argv)
 

@@ -39,8 +39,8 @@ second, and the serving layer presents both while keeping them distinguishable.
 
 | URL | What it is |
 |---|---|
-| <http://localhost:8000> | **Live fleet dashboard** — the business view, both layers |
-| <http://localhost:8000/docs> | API reference (OpenAPI) |
+| <http://localhost:18000> | **Live fleet dashboard** — the business view, both layers |
+| <http://localhost:18000/docs> | API reference (OpenAPI) |
 | <http://localhost:8088> | **Airflow** — the daily reconciliation DAG (`admin` / `admin`) |
 | <http://localhost:3000> | **Grafana** — pipeline health dashboard (anonymous access) |
 | <http://localhost:9090> | Prometheus — targets, metrics, alert rules |
@@ -125,7 +125,7 @@ Full justification, with the rejected alternatives, is in
 ## Quick start
 
 **Requirements:** Docker Desktop with ~8 GB of RAM available, and ports
-8000, 8088, 3000, 9090, 9091, 4040, 29092, 5432 free.
+18000, 8088, 3000, 9090, 9091, 4040, 29092, 5432 free.
 
 > If you ran the Chapter 3 Kafka assignment, stop it first — it binds the same
 > Kafka ports: `cd ../chapter3-kafka-orders && docker compose down`.
@@ -152,7 +152,7 @@ pip install -r requirements.txt
 python scripts/smoke_check.py      # is every layer alive?
 ```
 
-Open <http://localhost:8000>. Vehicle state appears within ~15 seconds; the
+Open <http://localhost:18000>. Vehicle state appears within ~15 seconds; the
 first windowed metrics after ~30 seconds; the first **batch reconciliation after
 about five minutes**, which is one simulated day.
 
@@ -186,7 +186,7 @@ the lake, the database and the simulated calendar.
    ```
    Each carries a `violations` array naming the exact rules it broke.
 
-5. **The live dashboard** at <http://localhost:8000> — utilisation, earnings per
+5. **The live dashboard** at <http://localhost:18000> — utilisation, earnings per
    simulated hour, zone breakdown, and idle alerts appearing as vehicles cross
    the threshold.
 

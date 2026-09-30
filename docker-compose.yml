@@ -45,7 +45,7 @@ services:
 
   # ------------------------------------------------------------------ ingestion
   zookeeper:
-    image: confluentinc/cp-zookeeper:7.3.2
+    image: confluentinc/cp-zookeeper:7.6.1
     container_name: fleet-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
@@ -57,7 +57,7 @@ services:
       retries: 12
 
   kafka:
-    image: confluentinc/cp-kafka:7.3.2
+    image: confluentinc/cp-kafka:7.6.1
     container_name: fleet-kafka
     depends_on:
       zookeeper:
@@ -88,24 +88,20 @@ services:
   # survives parallel consumption; quarantine and alerts are low volume and take
   # a single partition, which also gives them a total order for triage.
   kafka-init:
-    image: confluentinc/cp-kafka:7.3.2
+    image: confluentinc/cp-kafka:7.6.1
     container_name: fleet-kafka-init
     depends_on:
       kafka:
         condition: service_healthy
     entrypoint: ["/bin/bash", "-c"]
-    command: |
-      "
-      set -e
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
-        --topic fleet.telemetry --partitions 3 --replication-factor 1
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
-        --topic fleet.telemetry.quarantine --partitions 1 --replication-factor 1
-      kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists \
-        --topic fleet.alerts --partitions 1 --replication-factor 1
-      echo '--- topics ---'
-      kafka-topics --bootstrap-server kafka:9092 --list
-      "
+    command:
+      - |
+        set -e
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic fleet.telemetry --partitions 3 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic fleet.telemetry.quarantine --partitions 1 --replication-factor 1
+        kafka-topics --bootstrap-server kafka:9092 --create --if-not-exists --topic fleet.alerts --partitions 1 --replication-factor 1
+        echo '--- topics ---'
+        kafka-topics --bootstrap-server kafka:9092 --list
     restart: "no"
 
   # The one service that builds the shared application image.
@@ -190,7 +186,7 @@ services:
         condition: service_healthy
     environment: *app-env
     ports:
-      - "8000:8000"
+      - "18000:8000"
     volumes:
       - ./:/opt/project
       - fleet-data:/data
@@ -242,12 +238,11 @@ services:
       - fleet-airflow-logs:/opt/airflow/logs
       - fleet-data:/data
     entrypoint: ["/bin/bash", "-c"]
-    command: |
-      "
-      airflow db migrate &&
-      airflow users create --username admin --password admin \
-        --firstname Fleet --lastname Admin --role Admin --email admin@example.com || true
-      "
+    command:
+      - |
+        set -e
+        airflow db migrate
+        airflow users create --username admin --password admin --firstname Fleet --lastname Admin --role Admin --email admin@example.com || true
     restart: "no"
 
   airflow-scheduler:
