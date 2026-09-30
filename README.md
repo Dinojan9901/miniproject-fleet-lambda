@@ -1,6 +1,6 @@
 # Real-Time Fleet Operations Platform — a Lambda Architecture
 
-**EC8202 / EC8203 Applied Big Data Engineering — Mini Project (25%)**
+**EC8202 Applied Big Data Engineering — Mini Project (25%)**
 Use case 1: *Ride-hailing fleet operations.*
 
 A complete, runnable data platform that answers one question a fleet operator
@@ -23,6 +23,7 @@ second, and the serving layer presents both while keeping them distinguishable.
 - [What is running](#what-is-running)
 - [Architecture](#architecture)
 - [Quick start](#quick-start)
+- [Reproduce the results](#reproduce-the-results)
 - [The five-minute demo](#the-five-minute-demo)
 - [Repository layout](#repository-layout)
 - [The simulated clock](#the-simulated-clock)
@@ -52,43 +53,53 @@ second, and the serving layer presents both while keeping them distinguishable.
 
 ## Architecture
 
-```
-   SOURCES                    INGESTION            PROCESSING                    STORAGE                SERVING
- ─────────────             ───────────────    ─────────────────────      ──────────────────────    ─────────────────
+The project uses a Lambda design because fleet operators need two answers: a fast view of current activity, and a complete daily calculation that includes vehicle costs.
 
- telemetry                                   ┌──────────────────────┐
- simulator    ──JSON──▶  Kafka               │  SPEED LAYER         │   ┌────────────────────┐
- 12 vehicles             fleet.telemetry ───▶│  Spark Structured    │──▶│ Parquet lake       │
- ~6 events/s             3 partitions        │  Streaming           │   │ master dataset     │
- 4% malformed            keyed by vehicle    │                      │   │ sim_date=…         │──┐
-                                             │  validate → enrich   │   └────────────────────┘  │
-                              ▲              │  → window → alert    │                           │
-                              │              │                      │   ┌────────────────────┐  │
-                        fleet.telemetry      │                      │──▶│ Postgres  rt_*     │  │
-                        .quarantine   ◀──────│  rejected rows       │   │ live views         │  │
-                                             └──────────────────────┘   └────────────────────┘  │
-                                                                                   ▲            │
- expense                                     ┌──────────────────────┐              │            │
- partner      ──CSV───▶  landing/            │  BATCH LAYER         │              │            │
- 1 file per              expenses_<date>.csv │  Spark batch, run by │◀─────────────┼────────────┘
- simulated day           (atomic rename)  ──▶│  Airflow every       │              │
- some rows missing                           │  simulated day       │   ┌────────────────────┐
- some distances disputed                     │                      │──▶│ Postgres  daily_*  │
-                                             │  recompute exactly,  │   │ + CSV + HTML report│
-                                             │  join, reconcile     │   └────────────────────┘
-                                             └──────────────────────┘              │
-                                                                                   ▼
-                                                                        ┌──────────────────────┐
-                                                                        │ FastAPI serving layer│
-                                                                        │ merges both views,   │
-                                                                        │ labels which is which│
-                                                                        │  + live dashboard    │
-                                                                        └──────────────────────┘
+~~~mermaid
+flowchart LR
+    subgraph LIVE["Live path"]
+        V["Simulated vehicle updates"] --> K["Kafka"]
+        K --> SS["Spark Structured Streaming"]
+        SS --> LS["Live fleet data"]
+        SS --> H[("Full telemetry history<br/>Parquet")]
+        SS --> Q["Invalid events and alerts"]
+    end
 
- OBSERVABILITY  ── JSON logs from every component ─┐
-                ── /metrics scraped by Prometheus ─┼──▶ Grafana + 16 alert rules
-                ── batch metrics pushed to Pushgateway ─┘
-```
+    subgraph DAILY["Daily path"]
+        E["Fuel and maintenance file"] --> B["Spark batch job"]
+        H --> B
+        A["Airflow<br/>coordinates and checks the job"] -.-> B
+        B --> DB["PostgreSQL<br/>daily results"]
+        B --> DR["CSV and HTML report files"]
+    end
+
+    LS --> DB["PostgreSQL<br/>live and daily results"]
+    DR --> API
+    DB --> API["FastAPI"]
+    API --> DASH["Fleet dashboard"]
+
+    SS -. metrics .-> PR["Prometheus"]
+    API -. metrics .-> PR
+    B -. batch metrics .-> PG["Pushgateway"]
+    PG --> PR
+    PR --> G["Grafana"]
+
+    classDef live fill:#e6f4ff,stroke:#2583c5,color:#12334a;
+    classDef batch fill:#fff1dd,stroke:#d48a21,color:#50320b;
+    classDef serving fill:#e9f7ed,stroke:#35945a,color:#173d25;
+    classDef monitor fill:#f1eaff,stroke:#8055b7,color:#35214f;
+
+    class V,K,SS,LS,H,Q live;
+    class E,A,B,DR batch;
+    class DB,API,DASH serving;
+    class PR,PG,G monitor;
+~~~
+
+**Live path:** Kafka carries vehicle updates to Spark Structured Streaming. Spark updates the live fleet view and saves the complete telemetry history.
+
+**Daily path:** Airflow waits until the telemetry history and daily cost file are ready, then starts and checks a Spark batch job. The job calculates revenue, costs, and profit or loss for each vehicle.
+
+**Serving and monitoring:** PostgreSQL stores results for FastAPI and the dashboard. Prometheus and Grafana show pipeline health. The short batch job sends its metrics through Pushgateway.
 
 ### Why Lambda and not Kappa
 
@@ -124,42 +135,66 @@ Full justification, with the rejected alternatives, is in
 
 ## Quick start
 
-**Requirements:** Docker Desktop with ~8 GB of RAM available, and ports
-18000, 8088, 3000, 9090, 9091, 4040, 29092, 5432 free.
+**Requirements:** Docker Desktop running with about 8 GB of memory available, plus Python 3 for the smoke check. Ports 18000, 8088, 3000, 9090, 9091, 4040, 29092, and 5432 must be free.
 
-> If you ran the Chapter 3 Kafka assignment, stop it first — it binds the same
-> Kafka ports: `cd ../chapter3-kafka-orders && docker compose down`.
+Run these commands from the project folder in PowerShell. The first build downloads and builds the images and may take several minutes.
 
-```powershell
-cd miniproject-fleet-lambda
-
-# First run pulls and builds ~2 GB of images; allow 5-10 minutes.
+~~~powershell
 docker compose build
 docker compose up -d
-
-# Watch everything come up (the speed layer is last, after Kafka is healthy).
 docker compose ps
-docker compose logs -f speed-layer
-```
+~~~
 
-Then, from the host:
+Wait for the containers to become healthy. Check the API and run the project smoke check:
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+~~~powershell
+curl.exe http://localhost:18000/health
+python scripts/smoke_check.py
+~~~
 
-python scripts/smoke_check.py      # is every layer alive?
-```
+The health response should show healthy and database reachable. The smoke check reports which parts are ready. Some checks may show PENDING while the stream or first daily report is warming up. Vehicle state usually appears within about 15 seconds. The first daily report is produced after about five minutes, which is one simulated day.
 
-Open <http://localhost:18000>. Vehicle state appears within ~15 seconds; the
-first windowed metrics after ~30 seconds; the first **batch reconciliation after
-about five minutes**, which is one simulated day.
+Use docker compose logs -f speed-layer to follow live processing. Press Ctrl+C to stop following logs; this does not stop the containers.
 
-Shut down with `docker compose down`, or `docker compose down -v` to also discard
-the lake, the database and the simulated calendar.
+Stop the services with:
 
----
+~~~powershell
+docker compose down
+~~~
+
+This keeps saved data. Use docker compose down -v only for a full reset, because it deletes the database, reports, and simulated clock.
+
+## Reproduce the results
+
+After the first daily batch has completed, use the API to list available report dates:
+
+~~~powershell
+curl.exe http://localhost:18000/api/reports
+~~~
+
+Copy one sim_date from the response and use the same date for the report and comparison:
+
+~~~powershell
+$simDate = "2026-08-17"  # Replace this with a date returned by /api/reports
+curl.exe "http://localhost:18000/api/reports/daily/$simDate"
+curl.exe "http://localhost:18000/api/lambda/compare/$simDate"
+~~~
+
+Open the dashboard at http://localhost:18000 to see the live fleet, daily results, and speed-versus-batch comparison. Open the rendered daily report at:
+
+~~~text
+http://localhost:18000/api/reports/daily/<sim_date>/html
+~~~
+
+Replace the sim_date placeholder with the same date. The dashboard and reports will change as the simulated clock advances, so use a date currently returned by /api/reports. Run python scripts/smoke_check.py to check that the data sources, both processing paths, API, and monitoring are responding.
+
+To copy rendered reports and input files from the Docker volume onto the host, run:
+
+~~~powershell
+.\scripts\fetch_reports.ps1
+~~~
+
+This writes them under the project data folder.
 
 ## The five-minute demo
 
@@ -246,7 +281,7 @@ miniproject-fleet-lambda/
 │   └── templates/dashboard.html   the live dashboard
 ├── airflow/dags/fleet_daily_batch.py
 ├── sql/                        serving-store schema, applied on first start
-├── observability/              Prometheus config, 16 alert rules, Grafana
+├── observability/              Prometheus config, 15 alert rules, Grafana
 ├── scripts/
 │   ├── smoke_check.py          "is every layer alive?"
 │   └── fetch_reports.ps1       copy evidence out of the Docker volume

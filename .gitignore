@@ -1,4 +1,5 @@
 __pycache__/
+**/__pycache__/
 *.py[cod]
 .venv/
 venv/
@@ -6,6 +7,7 @@ venv/
 .idea/
 .vscode/
 .DS_Store
+.reviewtmp/
 
 # Runtime output: the lake, landing files, checkpoints and rendered reports all
 # live in a Docker volume. Anything copied out with scripts/fetch_reports.ps1
@@ -21,3 +23,8 @@ report/*.toc
 report/*.fls
 report/*.fdb_latexmk
 report/*.synctex.gz
+report/*.bbl
+report/*.blg
+report/*.nav
+report/*.snm
+report/*.vrb
